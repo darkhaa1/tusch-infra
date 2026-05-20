@@ -1,0 +1,62 @@
+# Secrets et fichiers sensibles
+.env
+.env.*
+!.env.example
+secrets/
+credentials/
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+!*.example.key
+!*.example.pem
+authorized_keys
+known_hosts
+
+# Backups et archives
+*.tar
+*.tar.gz
+*.tar.bz2
+*.zip
+*.gz
+*.bz2
+*.7z
+*.rar
+
+# Fichiers temporaires
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE / éditeurs
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Logs
+*.log
+logs/
+
+# Dépendances (au cas où on en met)
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Build
+dist/
+build/
+*.iso
+*.img
+*.qcow2
+*.raw
+
+# Outputs personnels
+notes-perso/
+private/
