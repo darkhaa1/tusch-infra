@@ -1,0 +1,24 @@
+# /etc/pve/nodes/<NODE_NAME>/host.fw — Firewall Proxmox niveau Node
+#
+# ⚠️  Fichier d'exemple anonymisé.
+#     <NODE_NAME>  = nom du node Proxmox (ex. tusch-pve-01)
+#
+# Active le firewall sur le node et applique les Security Groups
+# définis au niveau datacenter (cluster.fw).
+#
+# Ordre d'activation recommandé (filet de sécurité) :
+#   1. Vérifier que les Security Groups sont bien définis
+#   2. Garder une 2e session SSH ouverte en parallèle
+#   3. Activer le firewall Datacenter (aucun effet trafic à ce stade)
+#   4. Activer le firewall Node (les règles entrent en vigueur)
+#   5. Tester immédiatement depuis une nouvelle session
+#   6. Si OK, fermer la session de secours
+
+[OPTIONS]
+enable: 1
+
+[RULES]
+# Application des Security Groups définis dans cluster.fw
+GROUP admin-access
+GROUP tailscale-access
+GROUP web-public

@@ -1,0 +1,30 @@
+# /etc/pve/firewall/cluster.fw — Firewall Proxmox niveau Datacenter
+#
+# ⚠️  Fichier d'exemple anonymisé.
+#     <ADMIN_HOME_IP>  = IP publique fixe du poste d'administration
+#
+# Politique : DROP par défaut en entrée (deny-by-default).
+# Tout flux entrant qui ne matche aucune règle ACCEPT est rejeté.
+#
+# Les règles sont regroupées en Security Groups réutilisables,
+# appliqués ensuite au niveau du node (voir host.fw.example).
+
+[OPTIONS]
+enable: 1
+policy_in: DROP
+policy_out: ACCEPT
+
+[group admin-access]
+# Accès administration : SSH + interface Proxmox depuis le poste d'admin uniquement
+IN ACCEPT -source <ADMIN_HOME_IP> -p tcp -dport 22   -log nolog
+IN ACCEPT -source <ADMIN_HOME_IP> -p tcp -dport 8006 -log nolog
+
+[group tailscale-access]
+# Accès complet via le réseau Tailscale (plage CGNAT 100.64.0.0/10)
+IN ACCEPT -source 100.64.0.0/10 -log nolog
+
+[group web-public]
+# Trafic web public : HTTP + HTTPS depuis n'importe où
+# (utilisé par le reverse proxy Caddy)
+IN ACCEPT -p tcp -dport 80  -log nolog
+IN ACCEPT -p tcp -dport 443 -log nolog
