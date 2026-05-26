@@ -1,0 +1,62 @@
+# /etc/network/interfaces — Hôte Proxmox VE 8
+#
+# ⚠️  Fichier d'exemple anonymisé.
+#     Les valeurs entre <...> sont des placeholders à remplacer :
+#     <HOST_PUB_IP>     IP publique v4 du serveur
+#     <HOST_PUB_IPV6>   IP publique v6 du serveur
+#     <HOST_GW>         passerelle v4 fournie par l'hébergeur
+#     <PHYS_IFACE>      interface physique (ex. enpXsY)
+#
+# Architecture :
+#   - vmbr0 : bridge WAN, porte l'IP publique. Interface physique en slave.
+#   - vmbr1 : bridge LAN privé 10.10.0.0/24, isolé, sortie via NAT.
+#   - NAT MASQUERADE : permet aux conteneurs de vmbr1 de sortir sur Internet.
+#   - DNAT 80/443 : redirige le trafic web entrant vers le conteneur Caddy.
+#   - Règle fwbr+ : obligatoire quand le firewall Proxmox est actif (voir docs/pieges-resolus.md #3).
+
+source /etc/network/interfaces.d/*
+
+auto lo
+iface lo inet loopback
+iface lo inet6 loopback
+
+# --- Interface physique : membre de vmbr0, sans IP propre ---
+auto <PHYS_IFACE>
+iface <PHYS_IFACE> inet manual
+
+# --- Bridge WAN : porte l'IP publique ---
+auto vmbr0
+iface vmbr0 inet static
+    address <HOST_PUB_IP>/26
+    gateway <HOST_GW>
+    bridge-ports <PHYS_IFACE>
+    bridge-stp off
+    bridge-fd 0
+    # Route on-link vers la passerelle de l'hébergeur
+    up route add -net <HOST_GW_NET> netmask 255.255.255.192 gw <HOST_GW> dev vmbr0
+
+    # --- DNAT : trafic web entrant redirigé vers le conteneur Caddy (10.10.0.20) ---
+    post-up   iptables -t nat -A PREROUTING -i vmbr0 -p tcp --dport 80  -j DNAT --to-destination 10.10.0.20:80
+    post-down iptables -t nat -D PREROUTING -i vmbr0 -p tcp --dport 80  -j DNAT --to-destination 10.10.0.20:80
+    post-up   iptables -t nat -A PREROUTING -i vmbr0 -p tcp --dport 443 -j DNAT --to-destination 10.10.0.20:443
+    post-down iptables -t nat -D PREROUTING -i vmbr0 -p tcp --dport 443 -j DNAT --to-destination 10.10.0.20:443
+
+iface vmbr0 inet6 static
+    address <HOST_PUB_IPV6>/64
+    gateway fe80::1
+
+# --- Bridge LAN privé : 10.10.0.0/24, pour les conteneurs ---
+auto vmbr1
+iface vmbr1 inet static
+    address 10.10.0.1/24
+    bridge-ports none
+    bridge-stp off
+    bridge-fd 0
+    # Active le routage IP (le kernel route entre vmbr1 et vmbr0)
+    post-up   echo 1 > /proc/sys/net/ipv4/ip_forward
+    # NAT MASQUERADE : le trafic 10.10.0.0/24 sort avec l'IP publique
+    post-up   iptables -t nat -A POSTROUTING -s 10.10.0.0/24 -o vmbr0 -j MASQUERADE
+    post-down iptables -t nat -D POSTROUTING -s 10.10.0.0/24 -o vmbr0 -j MASQUERADE
+    # Zone conntrack dédiée aux mini-bridges firewall PVE (sinon NAT cassé)
+    post-up   iptables -t raw -I PREROUTING -i fwbr+ -j CT --zone 1
+    post-down iptables -t raw -D PREROUTING -i fwbr+ -j CT --zone 1
