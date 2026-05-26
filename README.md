@@ -27,7 +27,37 @@ Administrateur d'Infrastructures Sécurisées (AIS).
 
 ## Architecture en un coup d'œil
 
-![Architecture](diagrams/architecture-globale.svg)
+```mermaid
+flowchart TD
+    U["🌐 Visiteurs"] -->|HTTPS| CF
+    A["👤 Admin"] -.->|VPN chiffré| TS
+
+    subgraph EDGE["☁️ Cloudflare — Edge"]
+        CF["DNS · CDN · WAF · DDoS<br/>TLS 1.3 · HSTS · SSL Labs A+"]
+    end
+
+    subgraph DC["🏢 Hetzner — Falkenstein"]
+        HFW["🛡️ Robot Firewall<br/>filtrage réseau amont"]
+
+        subgraph PVE["🖥️ Serveur AX41 — Proxmox VE 8"]
+            HOST["Hôte Proxmox<br/>🔥 Datacenter Firewall — DROP par défaut"]
+            TS["🔐 Tailscale<br/>accès admin privé"]
+
+            subgraph LAN["🔒 LAN privé — vmbr1 · 10.10.0.0/24"]
+                CADDY["CT 101 · Caddy<br/>reverse proxy + TLS auto"]
+                APP["CT 200 · tusch-app<br/>Next.js · NestJS · PostgreSQL"]
+                TPL["CT 900 · template<br/>read-only"]
+            end
+        end
+    end
+
+    CF -->|"Proxied — IP réelle masquée"| HFW
+    HFW -->|"80 / 443"| HOST
+    HOST -->|"DNAT"| CADDY
+    CADDY -->|"reverse proxy → :3000 / :3310"| APP
+    TS -.-> HOST
+    TPL -.->|"clone"| APP
+```
 
 | Couche | Composants |
 |--------|------------|
