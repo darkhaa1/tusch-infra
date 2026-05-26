@@ -1,0 +1,37 @@
+# /etc/systemd/system/lvm-pool-loopback.service
+#
+# Remonte le pool LVM-thin (stocké sur un fichier loopback) au démarrage,
+# AVANT que Proxmox ne tente de lancer les conteneurs qui en dépendent.
+#
+# Contexte : le storage "local-lvm" de cette infra est un thin pool LVM
+# construit sur un fichier image attaché à /dev/loop3. Ce montage n'est pas
+# automatique au reboot — sans ce service, le VG n'est pas actif et les
+# conteneurs ne démarrent pas. Voir docs/architecture/04-stockage.md.
+#
+# Remplacer si besoin :
+#   /dev/loop3                    périphérique loopback utilisé
+#   /var/lib/vz/lvm-pool.img      fichier image du pool
+#   vg_tusch                      nom du Volume Group
+
+[Unit]
+Description=Setup loopback device for LVM thin pool
+# Pas de dépendances par défaut : ce service doit tourner très tôt
+DefaultDependencies=no
+After=local-fs.target
+# Doit s'exécuter AVANT le stockage et les invités Proxmox
+Before=lvm2-monitor.service pve-storage.target pve-guests.service
+# Le fichier image vit dans /var/lib/vz : ce point de montage doit être prêt
+RequiresMountsFor=/var/lib/vz
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Attache le fichier image au périphérique loopback, puis active le VG
+ExecStart=/sbin/losetup /dev/loop3 /var/lib/vz/lvm-pool.img
+ExecStart=/sbin/vgchange -ay vg_tusch
+# À l'arrêt : désactive le VG puis détache le loopback (ordre inverse)
+ExecStop=/sbin/vgchange -an vg_tusch
+ExecStop=/sbin/losetup -d /dev/loop3
+
+[Install]
+WantedBy=local-fs.target
