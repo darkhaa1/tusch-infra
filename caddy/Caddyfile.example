@@ -1,0 +1,51 @@
+# /etc/caddy/Caddyfile — Reverse proxy (conteneur CT 101)
+#
+# Caddy reçoit le trafic web (redirigé par DNAT depuis l'hôte) et le route
+# vers les applications du LAN privé. TLS géré automatiquement par Caddy
+# (certificats Let's Encrypt, renouvellement auto).
+#
+# Architecture :
+#   tusch.mn / www.tusch.mn  → CT 200 (Next.js)  10.10.0.30:3000
+#   api.tusch.mn             → CT 200 (NestJS)   10.10.0.30:3310
+#
+# Les IP privées 10.10.0.x (RFC 1918) sont conservées : aucun risque.
+
+# --- Frontend : Next.js ---
+tusch.mn, www.tusch.mn {
+    encode gzip zstd
+    reverse_proxy 10.10.0.30:3000
+
+    header {
+        # Force HTTPS pendant 1 an, sous-domaines inclus
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        # Empêche le navigateur de "deviner" le type de contenu
+        X-Content-Type-Options "nosniff"
+        # Pas d'intégration dans une iframe externe (anti-clickjacking)
+        X-Frame-Options "SAMEORIGIN"
+        # Ne fuite pas l'URL complète vers les sites tiers
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    log {
+        output file /var/log/caddy/tusch.mn.log
+        format json
+    }
+}
+
+# --- API : NestJS ---
+api.tusch.mn {
+    encode gzip zstd
+    reverse_proxy 10.10.0.30:3310
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    log {
+        output file /var/log/caddy/api.tusch.mn.log
+        format json
+    }
+}
