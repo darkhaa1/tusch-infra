@@ -336,4 +336,229 @@ est identique à une migration à chaud, mais sans le risque.
 
 ---
 
+## 10. Trunk VLAN absent sur le port tap de la VM OPNsense
+
+**Contexte** : mise en place de la segmentation par VLAN derrière OPNsense
+(voir [`architecture/05-segmentation-vlan.md`](architecture/05-segmentation-vlan.md)).
+Le bridge LAN avait bien été passé en `bridge-vlan-aware yes`, OPNsense avait
+créé ses interfaces VLAN, mais les clients tagués ne recevaient pas d'IP DHCP.
+
+**Où** : Hôte PVE — port tap de la VM OPNsense sur le bridge LAN.
+
+**Symptôme** : conteneur de test sur le bridge LAN avec `tag=20` reste sans
+IP DHCP. `tcpdump` côté OPNsense ne voit aucun `DHCPDISCOVER` tagué 20.
+
+**Cause** : par défaut, un port de bridge n'est associé qu'au PVID 1 — même
+quand le bridge global est VLAN-aware. La directive `bridge-vids` au niveau
+du bridge autorise une plage globale, mais les **ports individuels** doivent
+quand même être déclarés sur chaque VID qu'on veut laisser passer. Sans ça,
+les frames .1Q tagués sont jetés à la sortie du port avant même d'atteindre
+OPNsense.
+
+**Fix** — déclarer les VIDs autorisés directement dans la définition réseau
+de la VM, via l'option native Proxmox `trunks=`. Persistant au reboot, pas
+besoin de hook post-up :
+
+```
+trunks=10;20
+```
+
+(syntaxe Proxmox : VIDs séparés par `;`, posés sur l'interface réseau de la
+VM correspondant au port LAN). Après ré-application : `bridge vlan show`
+liste bien les VIDs 10 et 20 sur le port tap. Les clients reçoivent leur IP.
+
+**Leçon** : un bridge VLAN-aware filtre TOUS les VLANs sauf ceux explicitement
+autorisés sur chaque port. Côté Proxmox, `trunks=` est la méthode officielle
+et persistante — équivalente à `bridge vlan add`, mais réappliquée
+automatiquement à chaque démarrage de la VM.
+
+---
+
+## 11. Conflit DHCP dnsmasq vs Kea sur le port 67
+
+**Contexte** : configuration de Kea DHCP dans OPNsense pour servir les deux
+subnets VLAN. Settings posés, subnets déclarés, mais aucun OFFER côté clients.
+
+**Où** : VM OPNsense.
+
+**Symptôme** : Kea démarré, aucune erreur visible dans l'UI, mais aucun client
+ne reçoit d'IP. `sockstat -4 -l | grep 67` montre :
+
+```
+dnsmasq    *:67    *:*
+```
+
+Pas de `kea-dhcp4` sur les IPs des interfaces VLAN.
+
+**Cause** : dnsmasq était resté activé par défaut. Il occupait le port 67 sur
+wildcard (`*:67`) **avant** que Kea ne tente de se binder. Kea échouait
+silencieusement à prendre le port et restait en idle. Décocher les
+sous-options DHCP de dnsmasq ne suffit pas : c'est le service entier qui
+occupe le port.
+
+**Fix** — couper dnsmasq à la racine, pas juste ses sous-options.
+
+```
+Services → Dnsmasq DNS & DHCP → décocher l'Enable principal (section Default)
+→ Save → Apply
+```
+
+Puis vérifier que Kea a bien pris la main :
+
+```bash
+sockstat -4 -l | grep 67
+# → kea-dhcp4   <IP_VLAN_SERVEURS>:67
+# → kea-dhcp4   <IP_VLAN_CLIENTS>:67
+```
+
+Conserver Unbound activé pour le DNS — sinon en désactivant dnsmasq on perd
+aussi sa résolution intégrée.
+
+**Leçon** : « le service ne marche pas » → toujours vérifier qui occupe
+vraiment le port avec `sockstat`. Et désactiver un service signifie le couper
+en racine, pas juste décocher une sous-option dans l'UI.
+
+> **Sous-piège lié — Socket Type Kea en `udp`** : après avoir libéré le port,
+> Kea bind bien ses ports mais aucun OFFER n'apparaît sur les VLANs.
+> Cause : en `udp`, Kea bind un socket unicast sur l'IP de l'interface — qui
+> ne reçoit pas les broadcasts DHCP (`255.255.255.255`).
+> Fix : `Socket Type = raw` (capture L2 via `PF_PACKET`).
+> Sur des sous-interfaces virtuelles (VLAN, alias), `raw` est presque toujours
+> obligatoire.
+
+---
+
+## 12. Suricata — "no rules were loaded" après bascules successives
+
+**Contexte** : mise en place de Suricata sur OPNsense. Plusieurs allers-retours
+entre les modes PCAP (IDS) et Netmap (IPS), bascules de policy entre Alert et
+Drop. Au moment de tester la détection, `eve.json` ne montrait aucune alerte
+malgré du trafic de scan.
+
+**Où** : VM OPNsense, plugin `os-intrusion-detection`.
+
+**Symptôme** : `eve.json` ne contient que des events `event_type: flow` ou
+`event_type: ssh` (identification de protocole), aucun `event_type: alert`.
+Le log Suricata du jour révèle :
+
+```
+<Error> -- 1 rule files specified, but no rules were loaded!
+<Error> -- threshold.config: No such file or directory
+```
+
+**Cause** : la config IDS s'est corrompue au fil des bascules. Le fichier
+`threshold.config` (attendu par le moteur) a disparu, et le chargement des
+règles échoue dès l'initialisation. Le service démarre quand même, mais sans
+règle armée — d'où l'absence totale d'alertes.
+
+**Fix** — réinstaller proprement le plugin plutôt que d'essayer de réparer
+des fichiers manquants ou désynchronisés :
+
+```bash
+configctl ids stop
+pkg remove -y os-intrusion-detection
+rm -rf /usr/local/etc/suricata
+pkg install -y os-intrusion-detection
+```
+
+Puis reconfigurer depuis l'UI (Settings, Download des rulesets, Policy).
+Après réinstall, le log montre `N rules loaded successfully` et les alertes
+apparaissent en quelques minutes de trafic. Le blocage IPS est validé par un
+scan SSH sortant qui produit un événement `"action": "blocked"` (SID 2003068).
+
+**Leçon** : avant de tester du trafic, **toujours** vérifier `N rules loaded
+successfully` dans le log Suricata. C'est le premier maillon de la chaîne ;
+inutile de générer des scans pendant des heures si aucune règle n'est armée.
+Et quand la config IDS est manifestement corrompue, la réinstallation propre
+du plugin est souvent plus rapide que la réparation à la pince.
+
+---
+
+
+## 13. Alertmanager refuse de démarrer — permissions du fichier de config
+
+**Contexte** : ajout d'Alertmanager dans le conteneur de supervision, avec
+configuration du routeur Telegram. Le fichier YAML était en place, validé
+syntaxiquement par `amtool check-config`, mais le service ne démarrait pas.
+
+**Où** : CT monitoring.
+
+**Symptôme** : `systemctl status alertmanager` indique
+`active (failed)`. `journalctl -u alertmanager -n 50` ne donne presque rien,
+juste `Failed to start Alertmanager service`. Pas de stack trace, pas de
+mention de la cause exacte.
+
+**Cause** : le fichier `/etc/alertmanager/alertmanager.yml` avait été créé en
+`root:root 600`. Le service tourne sous l'utilisateur `prometheus` (créé par
+le paquet, comme c'est l'usage). `prometheus` n'avait donc pas la permission
+de **lire** le fichier de config, et le service échouait à l'open() sans
+verbosité utile dans les logs.
+
+**Fix** — donner la lecture à l'utilisateur du service, sans relâcher les
+droits d'écriture :
+
+```bash
+chown root:prometheus /etc/alertmanager/alertmanager.yml
+chmod 640 /etc/alertmanager/alertmanager.yml
+systemctl restart alertmanager
+```
+
+(Groupe `prometheus` en lecture, `root` propriétaire pour l'écriture.
+Permissions resserrées à `640` plutôt que `644` puisque le fichier contient
+des secrets — token Telegram, notamment.)
+
+**Leçon** : quand un service systemd échoue à démarrer sans message clair,
+vérifier en priorité (1) l'utilisateur sous lequel il tourne (`User=` dans
+l'unit, ou directive par défaut du paquet) et (2) les permissions des
+fichiers qu'il doit lire. Les logs sont souvent muets sur les erreurs
+d'open() avant fork.
+
+---
+
+## 14. DNS des LXC cassé par Tailscale MagicDNS héritée de l'hôte
+
+**Contexte** : après installation de Tailscale sur l'hôte Proxmox, plusieurs
+conteneurs ont vu leur résolution DNS publique tomber d'un coup. Symptôme
+visible aussi côté monitoring : `node_exporter` arrivait à scrape les cibles
+référencées par IP mais pas celles référencées par nom DNS.
+
+**Où** : Tous les LXC qui héritent du resolver de l'hôte (la majorité — les
+CTs n'ont pas de resolver propre par défaut).
+
+**Symptôme** : depuis un CT, `ping 8.8.8.8` répond ; `ping google.com`
+retourne `unknown host`. `cat /etc/resolv.conf` montre :
+
+```
+nameserver 100.100.100.100
+```
+
+C'est l'IP du resolver MagicDNS de Tailscale.
+
+**Cause** : Tailscale, à son démarrage, réécrit `/etc/resolv.conf` de l'hôte
+pour pointer sur `100.100.100.100` (MagicDNS, qui résout les noms internes
+au tailnet en `.ts.net`). Sans config explicite de forwarding pour les zones
+publiques, les requêtes pour des noms publics ne sont pas relayées et
+timeout. Les LXC héritent du resolver de l'hôte → ils sont impactés en
+cascade.
+
+**Fix** — désactiver MagicDNS comme resolver par défaut côté Tailscale (sans
+casser le reste : Tailscale continue à fonctionner pour le réseau privé,
+l'accès SSH par IP Tailscale, les ACL) :
+
+```bash
+tailscale set --accept-dns=false
+```
+
+L'hôte récupère son resolver public d'origine, et les LXC qui en héritent
+résolvent à nouveau les noms publics. La résolution des noms internes au
+tailnet est perdue côté hôte (acceptable, on n'en a pas besoin pour ce rôle).
+
+**Leçon** : quand DNS échoue mais ping par IP marche, vérifier en priorité
+`/etc/resolv.conf`. Et toujours considérer que Tailscale (ou n'importe quel
+agent qui touche au DNS) peut réécrire la config sans préavis. Pour les LXC,
+le simple fait qu'ils héritent du resolver de l'hôte sans le savoir suffit à
+créer une cascade silencieuse.
+
+---
+
 *Document mis à jour au fil de la mise en place de l'infrastructure.*

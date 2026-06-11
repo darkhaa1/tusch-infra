@@ -64,10 +64,11 @@ flowchart TD
 | Edge   | Cloudflare (DNS, CDN, WAF, DDoS) |
 | Reverse proxy | Caddy 2 (TLS automatique, HSTS, A+ SSL Labs) |
 | Hyperviseur | Proxmox VE 8 sur Debian 12 |
-| Sécurité | OPNsense, fail2ban, Tailscale (admin), Wazuh (à venir) |
+| Segmentation | OPNsense (VLANs 802.1Q, firewall directionnel inter-VLAN) |
+| Sécurité | Suricata IDS/IPS (inline Netmap), fail2ban, Tailscale (admin), Wazuh (à venir) |
 | Stockage | LVM-thin sur loopback (snapshots LXC), RAID 1 mdadm |
 | Backups | vzdump + restic vers Hetzner Storage Box |
-| Monitoring | Prometheus + Grafana + Loki (à venir) |
+| Supervision | Prometheus + Grafana + Alertmanager (Telegram) — Loki (à venir) |
 
 ---
 
@@ -86,12 +87,15 @@ flowchart TD
 
 - **Hyperviseur** : Proxmox VE 8 (community)
 - **OS hôte** : Debian 12 Bookworm
-- **Conteneurisation** : LXC (Linux) + KVM (Windows lab)
+- **Conteneurisation** : LXC (Linux) + KVM (Windows lab, OPNsense)
 - **Reverse proxy** : Caddy 2
+- **Segmentation réseau** : OPNsense — VLANs 802.1Q, Kea DHCP, firewall directionnel
+- **IDS/IPS** : Suricata sur OPNsense (mode inline Netmap, rulesets ET Open)
 - **VPN admin** : Tailscale
+- **Supervision** : Prometheus, Grafana, Alertmanager (notifications Telegram)
 - **Automatisation** : Ansible *(à venir)*
 - **CI/CD** : GitHub Actions *(à venir)*
-- **Observabilité** : Prometheus, Grafana, Loki *(à venir)*
+- **Logs centralisés** : Loki *(à venir)*
 
 ---
 
@@ -99,11 +103,12 @@ flowchart TD
 
 | Dossier | Contenu |
 |---------|---------|
-| `docs/architecture/` | Documentation détaillée par domaine |
+| `docs/architecture/` | Documentation détaillée par domaine (réseau, sécurité, segmentation VLAN, IDS/IPS, supervision, stockage) |
 | `docs/articles/` | Articles techniques (pièges résolus, retours d'expérience) |
 | `docs/pieges-resolus.md` | Index des problèmes résolus pendant la mise en place |
 | `proxmox/` | Configurations Proxmox (réseau, firewall, systemd) — anonymisées |
 | `caddy/` | Configurations Caddy — anonymisées |
+| `monitoring/` | Notes et fichiers de configuration de la stack de supervision |
 | `diagrams/` | Diagrammes d'architecture (sources Mermaid + exports) |
 
 ---
@@ -115,6 +120,8 @@ flowchart TD
 - Le piège du NAT Proxmox avec firewall actif (fwbr+ zone CT)
 - LVM-thin sur loopback pour snapshots LXC sans réinstaller Proxmox
 - Architecture homelab Proxmox sécurisée : Tailscale + Cloudflare + Caddy
+- Segmentation VLAN derrière un OPNsense virtualisé (trunk persistant via Proxmox)
+- Suricata inline sur VirtIO : le tunable Netmap qui fait tout marcher
 - Migrer son NAT iptables vers OPNsense sans casser sa prod *(à venir)*
 
 ---

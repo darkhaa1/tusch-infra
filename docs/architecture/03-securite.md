@@ -20,20 +20,23 @@ seule ne compromette pas l'ensemble.
    ├────────────────────────▼────────────────────────┤
    │  2. Firewall hébergeur  filtrage réseau amont     │  réseau
    ├────────────────────────▼────────────────────────┤
-   │  3. Firewall Proxmox    DROP par défaut           │  hyperviseur
+   │  3. OPNsense + Suricata segmentation VLAN · IDS/IPS│  segmentation
    ├────────────────────────▼────────────────────────┤
-   │  4. SSH hardening       clés uniquement           │  accès
+   │  4. Firewall Proxmox    DROP par défaut           │  hyperviseur
    ├────────────────────────▼────────────────────────┤
-   │  5. fail2ban            ban dynamique des IP      │  applicatif
+   │  5. SSH hardening       clés uniquement           │  accès
    ├────────────────────────▼────────────────────────┤
-   │  6. Tailscale           canal admin privé chiffré │  hors-bande
+   │  6. fail2ban            ban dynamique des IP      │  applicatif
+   ├────────────────────────▼────────────────────────┤
+   │  7. Tailscale           canal admin privé chiffré │  hors-bande
    └───────────────────────────────────────────────────┘
                             │
                      SERVICES PROTÉGÉS
 ```
 
 Les couches sont décrites de l'extérieur (Internet) vers l'intérieur
-(les services).
+(les services). Chacune est conçue pour résister seule au compromis d'une
+autre — c'est leur empilement qui assure la robustesse.
 
 ---
 
@@ -68,7 +71,27 @@ polluer les logs** du serveur.
 
 ---
 
-## Couche 3 — Firewall Proxmox (hyperviseur)
+## Couche 3 — OPNsense + Suricata (segmentation et inspection)
+
+Couche intermédiaire dédiée à la segmentation réseau et à l'inspection en
+profondeur. Réalisée par une appliance OPNsense virtualisée sur Proxmox.
+
+- **Segmentation par VLAN 802.1Q** : le LAN du lab est découpé en zones
+  étanches (SERVEURS, CLIENTS, et extensible). OPNsense est l'unique routeur
+  inter-VLAN, donc tout trafic qui change de zone traverse son firewall.
+- **Politique inter-VLAN directionnelle** : un client peut atteindre un
+  serveur ; un serveur ne peut pas initier vers un client (limite la
+  propagation latérale en cas de compromission). Retours stateful via
+  conntrack.
+- **Suricata IDS/IPS** en mode inline (Netmap) : rulesets ET Open chargés,
+  policy en `drop`, blocage actif validé sur des règles de scan sortant.
+
+Détail dans [`05-segmentation-vlan.md`](05-segmentation-vlan.md) et
+[`06-ids-ips-suricata.md`](06-ids-ips-suricata.md).
+
+---
+
+## Couche 4 — Firewall Proxmox (hyperviseur)
 
 Pare-feu intégré à l'hyperviseur, politique **DROP par défaut**.
 
@@ -81,7 +104,7 @@ Configuration complète et procédure d'activation sécurisée :
 
 ---
 
-## Couche 4 — SSH hardening (accès)
+## Couche 5 — SSH hardening (accès)
 
 L'accès SSH est durci pour rendre le brute-force inopérant.
 
@@ -112,7 +135,7 @@ LoginGraceTime 30                  # 30 s pour s'authentifier
 
 ---
 
-## Couche 5 — fail2ban (applicatif)
+## Couche 6 — fail2ban (applicatif)
 
 Surveille les logs SSH et bannit dynamiquement les IP malveillantes.
 
@@ -129,7 +152,7 @@ au niveau réseau — plus aucun paquet de l'attaquant n'atteint SSH.
 
 ---
 
-## Couche 6 — Tailscale (accès admin hors-bande)
+## Couche 7 — Tailscale (accès admin hors-bande)
 
 VPN mesh chiffré réservé à l'administration.
 
@@ -163,10 +186,22 @@ doit être en place avant même que le serveur ne soit "utile".
 |---|--------|--------|---------------------|
 | 1 | Cloudflare | Edge | WAF, DDoS, TLS, IP masquée |
 | 2 | Firewall hébergeur | Réseau | Filtrage amont, économie CPU |
-| 3 | Firewall Proxmox | Hyperviseur | DROP par défaut, segmentation |
-| 4 | SSH hardening | Accès | Clés ed25519, pas de mot de passe |
-| 5 | fail2ban | Applicatif | Ban dynamique des IP |
-| 6 | Tailscale | Hors-bande | Admin privé, UI non exposée |
+| 3 | OPNsense + Suricata | Segmentation | VLANs 802.1Q, firewall directionnel, IDS/IPS inline |
+| 4 | Firewall Proxmox | Hyperviseur | DROP par défaut, security groups |
+| 5 | SSH hardening | Accès | Clés ed25519, pas de mot de passe |
+| 6 | fail2ban | Applicatif | Ban dynamique des IP |
+| 7 | Tailscale | Hors-bande | Admin privé, UI non exposée |
 
 Chaque couche est indépendante. Le compromis d'une seule ne donne pas accès
 aux services : c'est tout l'intérêt de la défense en profondeur.
+
+---
+
+## Observabilité associée
+
+La défense en profondeur n'a de sens que si on **voit** ce qui se passe.
+La couche supervision (Prometheus + Grafana + Alertmanager, voir
+[`07-supervision.md`](07-supervision.md)) collecte les métriques de
+l'infrastructure et notifie Telegram dès qu'une alerte se déclenche : instance
+qui tombe, saturation disque ou mémoire. Les alertes Suricata (`eve.json`)
+seront intégrées à terme dans la même stack.

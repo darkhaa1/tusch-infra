@@ -92,8 +92,11 @@ flowchart TD
 | Hyperviseur | Proxmox VE 8 (édition no-subscription) |
 | OS hôte | Debian 12 Bookworm |
 | Stockage | RAID 1 (mdadm) + LVM-thin sur loopback (snapshots LXC) |
-| Conteneurisation | LXC |
+| Conteneurisation | LXC (Linux) + KVM (OPNsense) |
 | Reverse proxy | Caddy 2 (TLS automatique) |
+| Segmentation réseau | OPNsense — VLANs 802.1Q, Kea DHCP, firewall directionnel |
+| IDS/IPS | Suricata sur OPNsense (mode inline Netmap, rulesets ET Open) |
+| Supervision | Prometheus + Grafana + Alertmanager (notifications Telegram) |
 | VPN admin | Tailscale |
 | CDN / WAF | Cloudflare |
 | Pare-feu | Firewall hébergeur + firewall Proxmox (DROP par défaut) |
@@ -114,8 +117,11 @@ L'idée centrale : **si une couche tombe, les autres protègent.**
 | Document | Contenu |
 |----------|---------|
 | [`02-reseau.md`](02-reseau.md) | Bridges WAN/LAN, NAT, DNAT, plan d'adressage |
-| [`03-securite.md`](03-securite.md) | Les 6 couches de défense en profondeur |
+| [`03-securite.md`](03-securite.md) | Les couches de défense en profondeur |
 | [`04-stockage.md`](04-stockage.md) | LVM-thin sur loopback, snapshots LXC |
+| [`05-segmentation-vlan.md`](05-segmentation-vlan.md) | VLANs 802.1Q derrière OPNsense, politique inter-VLAN |
+| [`06-ids-ips-suricata.md`](06-ids-ips-suricata.md) | Suricata en mode inline (IDS puis IPS) |
+| [`07-supervision.md`](07-supervision.md) | Prometheus + Grafana + Alertmanager |
 | [`../pieges-resolus.md`](../pieges-resolus.md) | Problèmes rencontrés et résolus |
 | [`../../proxmox/`](../../proxmox/) | Configurations Proxmox (réseau, firewall, systemd) |
 | [`../../caddy/`](../../caddy/) | Configuration du reverse proxy |
@@ -125,9 +131,11 @@ L'idée centrale : **si une couche tombe, les autres protègent.**
 ## État et perspectives
 
 **En place** : virtualisation Proxmox, réseau segmenté (WAN/LAN privé), reverse
-proxy HTTPS (A+ SSL Labs), défense en profondeur 6 couches, stockage avec
-snapshots, accès admin via VPN.
+proxy HTTPS (A+ SSL Labs), défense en profondeur multi-couches, stockage avec
+snapshots, accès admin via VPN, **segmentation par VLAN avec firewall
+directionnel inter-VLAN (OPNsense)**, **IDS/IPS Suricata** en mode inline avec
+blocage validé, **supervision Prometheus + Grafana + Alertmanager** avec
+notifications Telegram.
 
-**À venir** : segmentation réseau avancée (OPNsense + VLANs + IDS),
-observabilité (Prometheus / Grafana / Loki), sauvegardes externes chiffrées,
-automatisation (Ansible), SSO centralisé (Authentik), SIEM (Wazuh).
+**À venir** : sauvegardes externes chiffrées de bout en bout, automatisation
+(Ansible), SSO centralisé (Authentik), SIEM (Wazuh), logs centralisés (Loki).
