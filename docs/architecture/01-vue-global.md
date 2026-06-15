@@ -97,6 +97,7 @@ flowchart TD
 | Segmentation réseau | OPNsense — VLANs 802.1Q, Kea DHCP, firewall directionnel |
 | IDS/IPS | Suricata sur OPNsense (mode inline Netmap, rulesets ET Open) |
 | Supervision | Prometheus + Grafana + Alertmanager (notifications Telegram) |
+| Identités (IAM) | Authentik — IdP OIDC/SAML/LDAP, SSO (Docker dans LXC dédié) |
 | VPN admin | Tailscale |
 | CDN / WAF | Cloudflare |
 | Pare-feu | Firewall hébergeur + firewall Proxmox (DROP par défaut) |
@@ -105,8 +106,8 @@ flowchart TD
 
 ## Sécurité — défense en profondeur
 
-Six couches de sécurité indépendantes, de l'edge jusqu'à l'accès admin
-hors-bande. Le détail est dans [`03-securite.md`](03-securite.md).
+Sept couches de sécurité indépendantes, de l'edge à l'accès admin
+hors-bande, jusqu'au contrôle d'accès centralisé (IAM). Le détail est dans [`03-securite.md`](03-securite.md).
 
 L'idée centrale : **si une couche tombe, les autres protègent.**
 
@@ -122,6 +123,7 @@ L'idée centrale : **si une couche tombe, les autres protègent.**
 | [`05-segmentation-vlan.md`](05-segmentation-vlan.md) | VLANs 802.1Q derrière OPNsense, politique inter-VLAN |
 | [`06-ids-ips-suricata.md`](06-ids-ips-suricata.md) | Suricata en mode inline (IDS puis IPS) |
 | [`07-supervision.md`](07-supervision.md) | Prometheus + Grafana + Alertmanager |
+| [`08-identites.md`](08-identites.md) | Authentik (IdP/SSO), OIDC Grafana, firewall par-CT |
 | [`../pieges-resolus.md`](../pieges-resolus.md) | Problèmes rencontrés et résolus |
 | [`../../proxmox/`](../../proxmox/) | Configurations Proxmox (réseau, firewall, systemd) |
 | [`../../caddy/`](../../caddy/) | Configuration du reverse proxy |
@@ -135,7 +137,8 @@ proxy HTTPS (A+ SSL Labs), défense en profondeur multi-couches, stockage avec
 snapshots, accès admin via VPN, **segmentation par VLAN avec firewall
 directionnel inter-VLAN (OPNsense)**, **IDS/IPS Suricata** en mode inline avec
 blocage validé, **supervision Prometheus + Grafana + Alertmanager** avec
-notifications Telegram.
+notifications Telegram. Accès admin direct par **subnet router Tailscale** et **SSO
+centralisé Authentik** (premier service branché : Grafana en OIDC).
 
 **À venir** : sauvegardes externes chiffrées de bout en bout, automatisation
-(Ansible), SSO centralisé (Authentik), SIEM (Wazuh), logs centralisés (Loki).
+(Ansible), SIEM (Wazuh), logs centralisés (Loki).

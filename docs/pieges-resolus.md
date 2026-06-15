@@ -12,6 +12,8 @@ et de leur résolution. Documenté au fil de l'eau, pour mémoire et pour partag
 - **Hôte PVE** : le serveur Proxmox lui-même (Debian 12 + Proxmox VE 8)
 - **CT 101** : conteneur LXC Caddy (reverse proxy, `10.10.0.20`)
 - **CT 200** : conteneur LXC applicatif tusch-app (`10.10.0.30`)
+- **CT monitoring** : conteneur LXC de supervision (Prometheus/Grafana/Alertmanager)
+- **CT auth** : conteneur LXC d'identité (Authentik IdP)
 - **Poste client** : mon PC Windows (poste d'administration)
 - **Cloudflare** : configuration edge (dashboard, pas une machine)
 
@@ -190,6 +192,16 @@ permet à Caddy d'écrire ses logs tout en laissant le dossier lisible.
 
 **Leçon** : un service qui ne tourne pas en root a besoin que les dossiers
 qu'il écrit lui appartiennent. Vérifier `User=` dans l'unit systemd.
+
+---
+
+> **Complément (récidive observée lors de l'ajout de vhosts Authentik/Grafana)**
+> Le même `permission denied` sur `/var/log/caddy/` s'est reproduit en ajoutant
+> de nouveaux fichiers de log par vhost. Détail important : `systemctl reload
+> caddy` qui **échoue laisse l'ancienne config en service** — le site public
+> n'est jamais coupé. C'est la différence fondamentale avec `restart`, qui
+> aurait arrêté le service puis échoué à le relancer (coupure réelle). En
+> production, privilégier `reload` pour les changements de config.
 
 ---
 
@@ -558,6 +570,340 @@ tailnet est perdue côté hôte (acceptable, on n'en a pas besoin pour ce rôle)
 agent qui touche au DNS) peut réécrire la config sans préavis. Pour les LXC,
 le simple fait qu'ils héritent du resolver de l'hôte sans le savoir suffit à
 créer une cascade silencieuse.
+
+**Complément ajouté pendant la mise en place de la supervision** : pour
+découpler totalement chaque LXC de l'état DNS de l'hôte, on fixe un resolver
+explicite par conteneur via `pct set <CTID> --nameserver <DNS_PROVIDER>`. Le
+LXC garde un resolver fonctionnel même si l'hôte casse le sien plus tard
+(MAJ Tailscale, autre agent, modification accidentelle). Principe :
+**découpler le DNS des CTs de l'état de l'hôte**.
+
+---
+
+## 16. pve-exporter renvoie 500 — API Proxmox bloquée par son propre DROP
+
+**Contexte** : mise en place de `pve-exporter` dans le CT de supervision
+(voir [`architecture/07-supervision.md`](architecture/07-supervision.md)).
+Token Proxmox généré, `pve.yml` configuré, service systemd démarré et `active`.
+Au premier scrape, Prometheus rapporte un 500 sur le job `pve`.
+
+**Où** : Hôte PVE (configuration du firewall Proxmox) — symptôme observé
+depuis le CT supervision qui n'arrive pas à parler à l'API.
+
+**Symptôme** : `curl -k https://<IP_HOST_LAN>:8006/api2/json/version` depuis
+le CT supervision → timeout. Depuis l'hôte lui-même → 200 OK. L'API est
+joignable de la machine qui l'héberge, mais pas du LAN.
+
+**Cause** : le firewall Proxmox est en politique INPUT DROP par défaut sur
+le node (cf. couche 4 de la défense en profondeur). Aucune security group
+ne couvrait le LAN privé du CT supervision vers le port 8006 — le paquet
+était jeté avant d'atteindre `pveproxy`. L'erreur 500 côté exporter masquait
+en réalité un timeout réseau.
+
+**Fix** — création d'un Security Group dédié dans Datacenter → Firewall →
+Security Groups :
+
+```
+monitoring-access :
+  ACCEPT  source = <IP_CT_MONITORING>  dest = -  proto = tcp  dport = 8006
+  ACCEPT  source = <IP_CT_MONITORING>  dest = -  proto = tcp  dport = 9100
+```
+
+Puis application du groupe sur le node tusch-pve-01. Une fois ces deux
+règles posées :
+
+```bash
+curl -k https://<IP_HOST_LAN>:8006/api2/json/version
+# → 200 OK
+systemctl restart pve-exporter   # côté CT supervision
+```
+
+Le job `pve` repasse `up == 1` côté Prometheus.
+
+**Leçon** : quand un service de l'hôte est joignable **de l'hôte** mais pas
+**du LAN**, suspecter le firewall de l'hôte avant le service lui-même. Les
+500 applicatifs masquent souvent des `connect: timeout` ou `connection
+refused` en dessous. `curl -v` depuis la source du scrape pour isoler la
+couche fautive.
+
+**Note sécurité** : on ouvre uniquement vers le **CT de supervision**, pas
+vers tout le LAN. Le CT applicatif exposé indirectement à Internet (via le
+reverse proxy) n'a aucun chemin vers l'API de l'hyperviseur — moindre
+privilège réseau.
+
+---
+
+## 17. node_exporter du CT en crash-loop — ARGS hérités de l'hôte
+
+**Contexte** : `prometheus-node-exporter` installé sur le CT supervision en
+même temps que sur les autres nœuds. Sur l'hôte Proxmox, j'avais restreint
+l'IP de bind au LAN via `/etc/default/prometheus-node-exporter`
+(défense en profondeur, cf. doc supervision). J'ai copié-collé la même config
+dans le CT pour aller vite.
+
+**Où** : CT supervision (`prometheus-node-exporter`).
+
+**Symptôme** : service en crash-loop. `systemctl status` affiche
+`status=1/FAILURE` répétés, le service tente de redémarrer à chaque échec.
+Dans les logs :
+
+```
+err="listen tcp <IP_HOST_LAN>:9100: bind: cannot assign requested address"
+```
+
+**Cause** : `ARGS="--web.listen-address=<IP_HOST_LAN>:9100"` avait été copié
+de la config de l'hôte. Cette IP est celle de l'hôte sur le bridge LAN. À
+l'intérieur du CT supervision, cette IP **n'existe pas** comme adresse
+locale — le CT a la sienne propre, différente. `bind()` échoue
+immédiatement (`EADDRNOTAVAIL`).
+
+**Fix** — restaurer la valeur par défaut du paquet (bind sur
+`0.0.0.0:9100`, ce qui dans le CT correspond à toutes ses interfaces
+réelles) :
+
+```bash
+# /etc/default/prometheus-node-exporter
+ARGS=""
+```
+
+Puis :
+
+```bash
+systemctl restart prometheus-node-exporter
+ss -tlnp | grep 9100   # vérifier qu'il écoute bien
+```
+
+**Leçon** : une config copiée d'une machine à l'autre doit être **relue
+ligne par ligne**, surtout les directives qui référencent des IPs ou des
+chemins. Ce qui a du sens sur l'hôte (bind LAN restreint comme défense en
+profondeur) n'a pas le même sens dans le CT (l'IP n'existe pas localement).
+
+---
+
+## 18. Alertmanager après 5 crashs rapides — `systemctl reset-failed` requis
+
+**Contexte** : configuration d'Alertmanager (voir piège #14 pour les
+permissions). Après plusieurs corrections successives du fichier de config
+(permissions, syntaxe, secret Telegram), j'ai voulu relancer le service.
+
+**Où** : CT supervision (`prometheus-alertmanager`).
+
+**Symptôme** : `systemctl start prometheus-alertmanager` ne fait rien
+visible. Le service ne démarre pas, aucun message dans `journalctl`. Statut :
+
+```
+prometheus-alertmanager.service - Alertmanager for Prometheus
+  Active: failed (Result: exit-code) since ...
+   start request repeated too quickly
+```
+
+**Cause** : avec `Restart=on-failure` (par défaut pour ce paquet), systemd
+empile les redémarrages rapides. Au-delà d'un seuil
+(`StartLimitBurst=5` / `StartLimitIntervalSec=10s` par défaut), systemd
+**refuse de redémarrer le service** et exige une remise à zéro explicite
+pour repartir, comme garde-fou contre les boucles infinies.
+
+**Fix** :
+
+```bash
+systemctl reset-failed prometheus-alertmanager
+systemctl start prometheus-alertmanager
+```
+
+`reset-failed` efface le compteur de crashs et débloque la machine d'état
+systemd.
+
+**Leçon** : quand un service refuse de démarrer alors qu'on a corrigé la
+config, vérifier `systemctl status` complet — la mention `start request
+repeated too quickly` est un cas spécifique de blocage par garde-fou
+systemd. La résolution est un `reset-failed`, pas une nouvelle modification
+de config.
+
+---
+
+## 19. Target `localhost:9100` en `connection refused` — paquet pas démarré
+
+**Contexte** : déclaration du job `node` dans `prometheus.yml`. Targets :
+les IPs des nœuds (hôte + 3 CTs). Au premier rechargement, presque tous les
+targets remontent `up = 1`. Un seul reste à `up = 0` : `localhost:9100`
+(c'est-à-dire le `node_exporter` censé tourner dans le CT supervision
+lui-même).
+
+**Où** : CT supervision.
+
+**Symptôme** : dans l'UI Prometheus → Status → Targets, le target
+`localhost:9100` est `DOWN` avec :
+
+```
+Get "http://localhost:9100/metrics": dial tcp [::1]:9100: connect: connection refused
+```
+
+Mention spécifique de `[::1]` : Prometheus tente IPv6 d'abord. L'erreur est
+explicite, mais facile à mésinterpréter comme un problème de config (binding
+IPv4 vs IPv6, etc.).
+
+**Cause** : j'avais cru que `prometheus-node-exporter` était installé et
+démarré dans le CT — en fait, après plusieurs purges/réinstallations
+pendant la mise au point, le paquet n'était plus présent, ou son service
+n'était pas démarré. Le port `9100` n'était pas en écoute, d'où le
+`connection refused` (refus immédiat — distinct d'un timeout réseau qui
+indiquerait un firewall).
+
+**Fix** — vérifier d'abord l'état réel avant d'accuser la config :
+
+```bash
+ss -tlnp | grep 9100              # rien -> rien n'écoute
+apt list --installed | grep node-exporter
+systemctl status prometheus-node-exporter
+# → réinstaller / réactiver / démarrer selon le cas
+apt install -y prometheus-node-exporter
+systemctl enable --now prometheus-node-exporter
+ss -tlnp | grep 9100              # *:9100 LISTEN ...
+```
+
+Après quoi le target remonte `up = 1` au scrape suivant.
+
+**Leçon** : **`connection refused` ≠ `connection timeout`**. Le refus est
+immédiat et signifie qu'**il n'y a personne qui écoute** sur ce port côté
+cible. Le timeout signifie qu'un paquet est jeté en route (firewall) ou que
+la cible est injoignable. La première chose à faire face à un `connection
+refused` est `ss -tlnp` côté cible — pas tripatouiller la config Prometheus.
+
+---
+
+## 20. Service injoignable — doublon d'IP (ping OK, refus TCP en 0 ms)
+
+**Où** : CT auth (`<IP_CT_AUTH>`), depuis le poste d'admin.
+
+**Symptôme** : tout est sain dans le CT (service démarré, port en écoute), le
+`ping` répond, mais **toute connexion TCP est refusée instantanément** (0 ms).
+
+**Cause** : doublon d'IP. Un autre CT portait déjà la même adresse ; c'est *lui*
+qui répondait aux pings et renvoyait des `RST` sur ses ports fermés. Le service
+visé ne voyait jamais le trafic.
+
+**Fix** — identifier par la table de voisinage ARP et comparer la MAC :
+
+```bash
+ip neigh show <IP_CT_AUTH>
+# comparer la MAC affichée avec celle du CT attendu
+```
+
+**Leçon** : **ping OK + refus TCP instantané = suspecter un doublon d'IP.** Un
+refus en 0 ms est une réponse *active* d'une machine vivante, pas un timeout.
+Vérifier la MAC avant de déboguer le service.
+
+---
+
+## 21. Firewall PVE réactivé « sans règles » mais le service reste joignable
+
+**Où** : CT monitoring.
+
+**Symptôme** : on réactive le firewall du CT avec une policy `DROP` et **sans**
+règle d'autorisation, mais l'UI reste accessible — le filtrage semble inopérant.
+
+**Cause** : le firewall est **stateful**. Les connexions *déjà établies* sont
+suivies et survivent à l'activation de la policy `DROP` ; seuls les **nouveaux**
+flux sont bloqués. La session navigateur ouverte continuait de fonctionner.
+
+**Fix** : tester en fenêtre privée ou après fermeture complète du navigateur,
+pour forcer une connexion neuve.
+
+**Leçon** : **toujours valider un changement de firewall avec une connexion
+NEUVE.** Une session vivante ne prouve rien sur la policy en vigueur.
+
+---
+
+## 22. Règle `.fw` sans effet — hors section `[RULES]` + écrasement UI/manuel
+
+**Où** : fichier firewall d'un CT (`/etc/pve/firewall/<CTID>.fw`).
+
+**Symptôme** : une règle ajoutée au fichier n'a aucun effet, et des règles
+précédentes ont disparu.
+
+**Cause double** : la règle avait été placée sous la section `[OPTIONS]` sans
+header `[RULES]` (donc ignorée), et une modification via l'UI entre-temps avait
+réécrit le fichier en perdant les règles éditées à la main.
+
+**Fix** : réécriture complète du fichier avec les deux sections correctement
+séparées, puis validation :
+
+```bash
+pve-firewall compile
+```
+
+**Leçon** : `cat` du fichier `.fw` **avant et après** toute modification.
+L'édition par l'UI et l'édition manuelle ne se mélangent pas impunément — l'une
+peut écraser l'autre. Choisir un canal et s'y tenir.
+
+---
+
+## 23. `502 Bad Gateway` avec `"duration":3.000` — drop silencieux du firewall
+
+**Où** : reverse proxy → CT monitoring (UI sur port applicatif).
+
+**Symptôme** : l'UI exposée renvoie `502`. Le log JSON du proxy montre une
+`duration` de très exactement **3.000 s** sur la tentative d'upstream.
+
+**Cause** : timeout de connexion vers l'upstream = **drop silencieux**. Le
+firewall du CT n'autorisait pas le reverse proxy à joindre le port ; le paquet
+était droppé sans réponse, d'où l'attente jusqu'au timeout.
+
+**Fix** : règle dédiée autorisant le reverse proxy → port applicatif sur le CT.
+
+**Leçon** — méthode de debug d'un `502` et **signature temporelle** :
+
+- se placer **sur le proxy** et `curl` directement l'upstream ;
+- un **timeout rond** (3.000 s, 5.000 s…) = **drop silencieux** d'un firewall
+  (le paquet part dans le vide) ;
+- un **refus en 0 ms** = **rejet actif** (`RST` renvoyé, rien n'écoute).
+
+Le chrono distingue les deux pannes.
+
+---
+
+## 24. `Redirect URI Error` au login OIDC après passage au domaine public
+
+**Où** : Authentik (provider OIDC) ↔ Grafana.
+
+**Symptôme** : le login OIDC, qui marchait en interne, échoue avec `Redirect URI
+Error` une fois le service passé sur son domaine public.
+
+**Cause** : le provider Authentik ne connaissait que l'ancienne *redirect URI*
+interne. En mode strict, l'URI publique non déclarée est refusée.
+
+**Fix** : ajouter l'URI publique aux *redirect URIs* du provider (le mode strict
+accepte plusieurs URIs déclarées — interne et publique coexistent).
+
+**Leçon** : URL d'un service OIDC modifiée = provider à mettre à jour. Ce n'est
+pas un bug, c'est le **contrôle de sécurité anti-détournement** du code
+d'autorisation qui fait son travail.
+
+---
+
+## 25. Rôle Grafana non éditable — `skip_org_role_sync` dans le mauvais bloc
+
+**Où** : `grafana.ini`.
+
+**Symptôme** : impossible d'éditer le rôle d'un utilisateur, message
+« synchronized from your auth provider ».
+
+**Cause** : la synchronisation OAuth écrase le rôle à chaque login. Le paramètre
+`skip_org_role_sync` avait bien été « activé » — mais en décommentant la ligne
+d'exemple (préfixée `;`) dans la **section de référence** du fichier, et non en
+l'ajoutant au bloc `[auth.generic_oauth]` **actif**. La ligne de référence
+n'est jamais lue.
+
+**Fix** : ajouter le paramètre dans le bloc actif, puis `restart`. Confirmer :
+
+```bash
+grep -n "skip_org_role_sync" /etc/grafana/grafana.ini
+# doit apparaître sous le bon [auth.generic_oauth], non commenté
+```
+
+**Leçon** : dans les fichiers `ini` à sections dupliquées (référence commentée +
+section active), toujours vérifier dans **quel** bloc on écrit. Un `grep` avec
+numéro de ligne lève le doute en deux secondes.
 
 ---
 

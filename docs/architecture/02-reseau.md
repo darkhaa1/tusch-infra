@@ -123,6 +123,52 @@ C'est une spécificité Proxmox, pas du Linux standard. Détail complet dans
 
 ---
 
+## Accès admin direct — Tailscale subnet router
+
+Au départ, chaque UI web interne (OPNsense, Grafana, Prometheus) exigeait un
+tunnel SSH manuel : se souvenir de la clé, du port local, du port distant et de
+l'IP interne. Multiplié par le nombre de services et d'appareils, c'est une
+friction quotidienne — et une commande de moins serait une commande oubliée.
+
+**Solution** : faire de l'hôte Proxmox un *subnet router* Tailscale. Il annonce
+les LANs internes au tailnet, et tout appareil du tailnet atteint directement
+les IPs internes au navigateur, sans aucun tunnel.
+
+```bash
+tailscale set --advertise-routes=10.10.0.0/24,10.20.0.0/24
+```
+
+Trois conditions, faute de quoi rien ne route :
+
+1. **Annonce** côté hôte (commande ci-dessus) — l'hôte devient la passerelle
+   Tailscale → LAN.
+2. **Approbation explicite** des routes dans la console admin Tailscale. Tant
+   qu'un admin n'a pas approuvé, l'annonce est silencieusement ignorée : la
+   commande réussit, mais aucune route n'est active.
+3. **Activation côté client** (toggle « Use Tailscale subnets »). Sans lui, le
+   client ignore les routes même approuvées.
+
+### Détail technique — SNAT des subnet routes
+
+Par défaut, Tailscale fait du **SNAT** sur le trafic des subnet routes : un
+paquet venant du tailnet entre dans le LAN avec la source réécrite en IP de
+l'hôte routeur (`<IP_HOST_LAN>`). Du point de vue d'un CT, **tout** le trafic
+d'administration arrive donc d'une seule et même IP.
+
+Conséquence pratique : les règles firewall par-CT n'ont qu'**une** source admin
+à autoriser, au lieu d'une par appareil du tailnet. C'est ce qui rend la
+segmentation par-CT simple à écrire (voir
+[`08-identites.md`](08-identites.md) § Segmentation firewall par conteneur).
+
+### Filet de secours — alias SSH
+
+Si Tailscale est indisponible, le tunnel SSH reste le plan B. Un alias
+`~/.ssh/config` regroupe tous les `LocalForward` d'un coup, pour que le filet de
+secours soit aussi simple que la solution principale — sinon il ne sera pas
+utilisé le jour où il faut.
+
+---
+
 ## Accès administration
 
 L'administration **ne passe pas** par le chemin web public :

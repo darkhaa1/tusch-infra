@@ -69,10 +69,11 @@ flowchart TD
 | Stockage | LVM-thin sur loopback (snapshots LXC), RAID 1 mdadm |
 | Backups | vzdump + restic vers Hetzner Storage Box |
 | Supervision | Prometheus + Grafana + Alertmanager (Telegram) — Loki (à venir) |
+| Identités (IAM) | Authentik (OIDC/SAML/LDAP) — SSO, premier service : Grafana |
 
 ---
 
-## Défense en profondeur — 6 couches
+## Défense en profondeur — 7 couches
 
 1. **Cloudflare** (WAF, CDN, DDoS, TLS edge)
 2. **Hetzner Robot Firewall** (filtrage amont au niveau réseau datacenter)
@@ -80,6 +81,7 @@ flowchart TD
 4. **Proxmox Datacenter Firewall** (DROP default, security groups)
 5. **Hardening SSH + fail2ban** (clés ed25519 uniquement, ban dynamique)
 6. **Tailscale** (canal admin chiffré, IP publique non requise pour l'admin)
+7. **Authentik (IAM)** (SSO centralisé, contrôle d'accès aux services internes)
 
 ---
 
@@ -93,6 +95,7 @@ flowchart TD
 - **IDS/IPS** : Suricata sur OPNsense (mode inline Netmap, rulesets ET Open)
 - **VPN admin** : Tailscale
 - **Supervision** : Prometheus, Grafana, Alertmanager (notifications Telegram)
+- **Identités (IAM)** : Authentik — IdP OIDC/SAML/LDAP, SSO (Docker dans LXC dédié)
 - **Automatisation** : Ansible *(à venir)*
 - **CI/CD** : GitHub Actions *(à venir)*
 - **Logs centralisés** : Loki *(à venir)*
@@ -103,7 +106,7 @@ flowchart TD
 
 | Dossier | Contenu |
 |---------|---------|
-| `docs/architecture/` | Documentation détaillée par domaine (réseau, sécurité, segmentation VLAN, IDS/IPS, supervision, stockage) |
+| `docs/architecture/` | Documentation détaillée par domaine (réseau, sécurité, segmentation VLAN, IDS/IPS, supervision, identités/IAM, stockage) |
 | `docs/articles/` | Articles techniques (pièges résolus, retours d'expérience) |
 | `docs/pieges-resolus.md` | Index des problèmes résolus pendant la mise en place |
 | `proxmox/` | Configurations Proxmox (réseau, firewall, systemd) — anonymisées |
@@ -122,6 +125,7 @@ flowchart TD
 - Architecture homelab Proxmox sécurisée : Tailscale + Cloudflare + Caddy
 - Segmentation VLAN derrière un OPNsense virtualisé (trunk persistant via Proxmox)
 - Suricata inline sur VirtIO : le tunable Netmap qui fait tout marcher
+- Authentik en homelab : SSO OIDC sur Grafana et segmentation firewall par-CT
 - Migrer son NAT iptables vers OPNsense sans casser sa prod *(à venir)*
 
 ---

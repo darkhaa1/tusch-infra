@@ -33,13 +33,13 @@ et inversement.
         └──────────────────┘         └──────────────────┘
 ```
 
-| Composant | Rôle |
-|-----------|------|
-| **Prometheus** | Collecte des métriques (scrape pull), stockage série temporelle |
-| **Grafana** | Visualisation, dashboards |
-| **Alertmanager** | Routage, regroupement et envoi des alertes |
-| **node_exporter** | Métriques OS (CPU, RAM, disque, réseau) sur chaque nœud |
-| **pve-exporter** | Métriques spécifiques Proxmox (VMs, CTs, storages) |
+| Composant | Source | Rôle |
+|-----------|--------|------|
+| **Prometheus 2.42** | paquet Debian `prometheus` | Collecte des métriques (scrape pull), stockage série temporelle. UI principale sur `/`, UI historique sur `/classic/`. |
+| **Grafana** | repo apt officiel Grafana (clé GPG dans `/etc/apt/keyrings/`) | Visualisation, dashboards. La version Debian est absente du dépôt — passage par le repo officiel. |
+| **Alertmanager** | paquet Debian `prometheus-alertmanager` | Routage, regroupement et envoi des alertes (port 9093) |
+| **node_exporter** | paquet Debian `prometheus-node-exporter` | Métriques OS (CPU, RAM, disque, réseau) sur chaque nœud |
+| **pve-exporter** | `pip install prometheus-pve-exporter` dans un venv | Métriques spécifiques Proxmox (VMs, CTs, storages, cluster) |
 
 ---
 
@@ -72,23 +72,34 @@ pousse. Avantages :
 
 ## node_exporter — métriques OS
 
-Déployé sur 5 nœuds : l'hôte Proxmox et un sous-ensemble de conteneurs
-représentatifs (reverse proxy, application, supervision elle-même, etc.).
+Déployé sur 4 nœuds : l'hôte Proxmox, le conteneur reverse-proxy (Caddy), le
+conteneur applicatif (`tusch-app`), et le conteneur de supervision lui-même.
+Paquet Debian `prometheus-node-exporter`, port `9100`.
 
-### Service systemd minimal
+### Particularité de l'hôte — bind restreint au LAN privé
 
-L'exporter tourne sous un utilisateur non-privilégié dédié, exposé en interne
-sur le port `9100`. Le scrape passe par le LAN privé — aucune exposition
-publique.
+Sur l'hôte Proxmox, l'exporter ne doit **pas** écouter sur l'IP publique. La
+politique du firewall Proxmox en INPUT droppe déjà tout par défaut, mais on
+applique en plus le principe de défense en profondeur côté service : on
+restreint explicitement le bind à l'IP du LAN privé.
 
-### Piège LXC
+Fichier `/etc/default/prometheus-node-exporter` sur l'hôte :
 
-Sur l'hôte Proxmox, la config systemd de référence inclut souvent un
-`ProtectHome=true` et plusieurs `BindReadOnlyPaths=`. **Ne pas copier-coller
-cette config telle quelle dans un LXC** : le bind échoue (chemins inexistants
-ou non remontables côté conteneur) et le service refuse de démarrer. Il faut
-une version simplifiée pour LXC, sans les binds spécifiques à l'hôte. Voir
-piège correspondant.
+```
+ARGS="--web.listen-address=<IP_HOST_LAN>:9100"
+```
+
+Conséquence : même si une règle firewall était mal posée, l'exporter ne
+servirait pas sur l'IP publique — la socket d'écoute n'y est tout simplement
+pas. Deux couches indépendantes (firewall + bind) qui protègent la même
+chose : c'est l'intention de la défense en profondeur.
+
+### Particularité du conteneur
+
+Dans un LXC, le bind doit rester à la valeur par défaut (`ARGS=""`) — l'IP du
+LAN du LXC n'est pas la même que celle de l'hôte, et un `--web.listen-address`
+copié de la config de l'hôte cause un crash au démarrage (l'IP référencée
+n'existe pas dans le conteneur). Voir piège correspondant.
 
 ---
 
@@ -96,72 +107,234 @@ piège correspondant.
 
 L'exporter interroge l'API Proxmox pour exposer des métriques spécifiques
 (état des VMs/CTs, utilisation des storages, statut du cluster, etc.).
+Installé dans un virtualenv Python dédié plutôt qu'avec les paquets système,
+pour ne pas polluer Python global et faciliter les mises à jour de
+l'exporter sans toucher au système.
+
+```bash
+python3 -m venv /opt/pve-exporter
+/opt/pve-exporter/bin/pip install prometheus-pve-exporter
+```
+
+L'exporter écoute en local sur le port `9221`. Prometheus le scrape via un
+relabel pattern (voir plus bas).
 
 ### Authentification — principe de moindre privilège
 
-L'exporter a besoin d'accéder à l'API Proxmox **en lecture seule**. Plutôt que
-d'utiliser un compte admin, on crée :
+L'exporter doit accéder à l'API Proxmox **en lecture seule**. Configuration
+côté Proxmox :
 
-- Un **utilisateur Proxmox dédié** (`monitoring@pve` par exemple), sans accès
-  shell, juste pour l'API.
-- Un **rôle** : `PVEAuditor` (rôle natif Proxmox qui donne lecture sur tout
-  l'inventaire et les métriques, sans aucun droit d'écriture).
-- Un **API token** scoped à cet utilisateur, configuré côté exporter.
+- **Utilisateur Proxmox dédié** : `monitoring@pve`, sans accès shell, juste
+  pour l'API.
+- **Rôle** : `PVEAuditor` (rôle natif Proxmox qui donne lecture sur tout
+  l'inventaire et les métriques, aucun droit d'écriture). Appliqué sur `/`
+  (racine de la hiérarchie de permissions).
+- **API token** : créé sur cet utilisateur avec le flag **`--privsep 0`**
+  (« privilege separation off »). Concrètement, le token hérite alors
+  pleinement des droits du user — `PVEAuditor`, donc lecture seule. Sans
+  `--privsep 0`, le token a un jeu de droits indépendant qu'il faut explicitement
+  attribuer ; avec `--privsep 0`, il hérite, ce qui est plus simple pour un
+  exporter dédié et plus lisible à auditer (le contrôle d'accès se lit en un
+  seul endroit, sur l'utilisateur).
 
 L'exporter ne peut donc rien modifier sur Proxmox : il peut lire la liste des
 VMs, leur état, leurs ressources, mais pas en créer, démarrer, supprimer.
-Application directe du moindre privilège — si le secret de l'exporter fuite,
-l'impact est limité à de la lecture.
 
-> Le token est traité comme un secret : stocké dans un fichier dont les
-> permissions limitent la lecture au seul utilisateur du service, jamais
-> versionné dans Git.
+### Stockage du token et service systemd
+
+Le token est référencé dans `/etc/prometheus/pve.yml` côté CT supervision :
+
+- Propriétaire `prometheus`, permissions `600` — lisible uniquement par le
+  service.
+- Jamais versionné dans Git ; le fichier réel reste hors du dépôt, seul un
+  équivalent `.example` avec placeholders peut y figurer.
+
+Service systemd dédié `pve-exporter.service` :
+
+- `User=prometheus`
+- `ExecStart=/opt/pve-exporter/bin/pve_exporter ...`
+- `Restart=on-failure`
+- `enabled` (démarre au boot du conteneur)
+
+---
+
+## Firewall Proxmox — Security Group dédié
+
+Sur le datacenter Proxmox, un Security Group `monitoring-access` est créé puis
+appliqué au node. Il autorise **uniquement le CT de supervision** à atteindre
+deux ports de l'hôte :
+
+- **tcp/8006** — API Proxmox, nécessaire à `pve-exporter` pour lire les
+  métriques de l'hyperviseur.
+- **tcp/9100** — `node_exporter` de l'hôte, scrapé par Prometheus du CT.
+
+Aucun autre conteneur n'est autorisé à parler à ces ports — en particulier
+pas le conteneur applicatif exposé indirectement à Internet via le reverse
+proxy. Justification : si l'app est compromise, l'attaquant ne doit pas avoir
+de route préapprouvée vers l'API de l'hyperviseur. Le seul CT qui a une raison
+légitime de causer avec l'hôte sur ces deux ports est celui de la supervision,
+qui n'a aucune entrée publique.
+
+C'est l'application directe du moindre privilège **réseau** : un service ne
+parle qu'aux endpoints dont il a besoin pour faire son travail, rien d'autre.
+
+---
+
+## Prometheus — jobs de scrape et relabel
+
+Deux jobs dans `prometheus.yml` :
+
+### Job `node` — node_exporter sur les 4 nœuds
+
+Liste statique de targets sur le port `9100`. Un job, quatre IPs cibles, tout
+en clair. Rien d'exotique.
+
+### Job `pve` — relabel pattern des exporters proxy
+
+`pve-exporter` est un *exporter proxy* : il expose lui-même un endpoint
+unique (`localhost:9221/pve`), et c'est le **paramètre `?target=`** qui
+indique quelle instance Proxmox interroger.
+
+Le pattern de scrape côté Prometheus s'écrit comme suit (déclaration
+sémantique, simplifiée) :
+
+- `metrics_path: /pve`
+- `static_configs.targets:` la liste des **noms** des hyperviseurs Proxmox à
+  scraper (ici un seul : le nom de l'hôte courant)
+- `relabel_configs:` trois étapes (pattern standard de tous les exporters
+  proxy) :
+  1. Recopier le label `__address__` (le nom du hyperviseur) dans le
+     paramètre URL `__param_target`.
+  2. Recopier ce même `__address__` dans le label `instance` (pour que les
+     dashboards montrent bien le nom de l'hôte, pas `localhost:9221`).
+  3. Réécrire l'`__address__` vers `localhost:9221` (l'adresse réelle de
+     l'exporter).
+
+Résultat : un seul exporter scrape N hyperviseurs en parallèle, sans
+duplication de config — le pattern est extensible à un cluster Proxmox plus
+tard sans changer de structure.
+
+### Validation avant reload
+
+Toujours valider le YAML avant de demander à Prometheus de recharger :
+
+```bash
+promtool check config /etc/prometheus/prometheus.yml
+systemctl reload prometheus
+```
+
+Un YAML invalide laisse Prometheus tomber au reload, et le SIGHUP suivant
+n'est pas mieux. Mieux vaut détecter l'erreur avant.
 
 ---
 
 ## Dashboards Grafana
 
-Deux dashboards en service :
+Datasource Prometheus configurée sur `http://localhost:9090` (Prometheus
+local au CT). Deux dashboards officiels importés depuis grafana.com :
 
-- **Node Exporter Full** — vue complète OS par nœud (CPU, RAM, disque, IO,
-  réseau, contextes, descripteurs de fichiers). Dashboard très utilisé de la
-  communauté, point de départ pour le tuning.
-- **Proxmox** — vue agrégée à partir de `pve-exporter` (nombre de VMs/CTs par
-  état, utilisation des storages, métriques cluster).
+- **Node Exporter Full** (ID `1860`) — vue complète OS par nœud (CPU, RAM,
+  disque, IO, réseau, contextes, descripteurs de fichiers). Dashboard de
+  référence de la communauté Prometheus, point de départ pour le tuning.
+- **Proxmox via pve-exporter** (ID `10347`) — vue agrégée à partir de
+  `pve-exporter` (nombre de VMs/CTs par état, utilisation des storages,
+  métriques cluster).
 
-Les dashboards sont importés depuis le hub Grafana ; les sources de données
-sont configurées pour pointer vers Prometheus interne au CT supervision.
+### Aucune exposition publique de l'UI Grafana
+
+L'accès passe **uniquement** par tunnel SSH (`ssh -L 3000:localhost:3000 ...`)
+depuis le poste d'admin via le canal hors-bande (cf.
+[`03-securite.md`](03-securite.md) couche 7). Les ports `9090` (Prometheus),
+`9100` (node_exporter), `3000` (Grafana) **ne sont pas exposés sur Internet** —
+vérifié depuis l'extérieur, ils ne répondent pas. Le seul chemin d'admin
+passe par SSH/Tailscale, pas par une UI web publiée.
 
 ---
 
 ## Alertmanager — règles et notifications
 
-Trois règles initiales, suffisamment génériques pour couvrir les pannes les
-plus fréquentes sans déclencher pour rien :
+Trois règles initiales déclarées dans `/etc/prometheus/rules.yml`, attachées
+à Prometheus via les directives `alerting:` et `rule_files:` dans
+`prometheus.yml`.
 
-| Règle | Condition (sémantique) | Pourquoi |
-|-------|------------------------|----------|
-| **Instance down** | `up == 0` pendant N minutes | Une cible ne répond plus → détection immédiate |
-| **Disque > 85 %** | Espace libre < 15 % sur une partition | Anticiper la saturation, pas attendre l'urgence |
-| **RAM > 90 %** | Mémoire utilisée > 90 % pendant N minutes | Pression mémoire soutenue, risque OOM |
+| Règle | Condition | `for` | Sévérité |
+|-------|-----------|-------|----------|
+| **InstanceDown** | `up == 0` | 5 min | critical |
+| **DiskAlmostFull** | espace libre < 15 % sur une partition (hors `tmpfs` / `overlay`) | 10 min | warning |
+| **HighMemory** | mémoire utilisée > 90 % | 10 min | warning |
 
-Les seuils (85 % disque, 90 % RAM) sont volontairement larges au démarrage,
-pour éviter le bruit. Ils seront resserrés une fois la baseline de l'infra
-connue.
+Les `for` (durée de persistance avant déclenchement) évitent les alertes
+flash sur un blip momentané. Cinq minutes pour InstanceDown, dix pour les
+saturations qui peuvent osciller.
+
+Les filesystems `tmpfs` et `overlay` sont **exclus** de DiskAlmostFull : ils
+ne sont pas du stockage persistant, leur saturation a une autre sémantique
+(et leur passage à 100 % est parfois normal).
 
 ### Notifications Telegram
 
-Routage des alertes vers un canal Telegram dédié : notifications push
-immédiates, indépendantes du mail. Le bot Telegram et le chat ID sont
-référencés dans la config Alertmanager via une variable d'environnement, le
-secret n'apparaît pas dans le fichier YAML.
+Routage des alertes vers un canal Telegram dédié via `telegram_configs`. Bot
+dédié à la supervision (créé via BotFather), `bot_token` et `chat_id`
+référencés dans la config Alertmanager. Notifications push immédiates,
+indépendantes du mail.
 
-### Permissions de la config Alertmanager
+### Test de bout en bout — déclenchement contrôlé
 
-Le service tourne sous l'utilisateur `prometheus` (créé par le paquet). Le
-fichier de config doit donc être **lisible par cet utilisateur**, sinon
-Alertmanager refuse de démarrer en silence (les logs systemd disent juste
-« failed to start » sans grand détail). Voir piège correspondant.
+Méthode utilisée pour valider la chaîne complète Prometheus → règle → AM →
+Telegram :
+
+1. Arrêt volontaire d'un `node_exporter` sur un CT applicatif : `systemctl
+   stop prometheus-node-exporter`.
+2. Côté Prometheus, la cible passe en `up == 0`. L'alerte InstanceDown passe
+   en `pending` (mécanisme de déduplication pendant la fenêtre `for`).
+3. À T+5 min, `pending` → `firing`. Alertmanager reçoit le signal.
+4. Une notification Telegram arrive immédiatement, avec le label `instance`
+   identifiant le CT en cause.
+5. Redémarrage de l'exporter : la cible revient `up == 1`, Prometheus passe
+   l'alerte en `resolved`, et Alertmanager pousse une notification
+   « RESOLVED » sur Telegram.
+
+Sans ce test, on ne sait pas si la chaîne marche — chaque maillon (règle,
+templating, secret bot, ACL chat) peut casser silencieusement.
+
+### Hygiène secrets — leçon de terrain
+
+Pendant le setup, **le token du bot Telegram a été visible sur une capture
+d'écran** partagée pendant une session de débogage. Action prise :
+
+- Le token est considéré comme **compromis** dès lors qu'il a transité en
+  clair, même brièvement.
+- Régénération immédiate via BotFather → `/revoke` (l'ancien token devient
+  invalide instantanément).
+- Mise à jour de la config Alertmanager avec le nouveau token, restart du
+  service.
+
+Principe à retenir : **un secret exposé est un secret rotaté**, même si
+« personne n'a sans doute vu », « c'était juste 30 secondes », « le canal
+était privé ». La rotation est gratuite (quelques minutes), un secret
+compromis qui reste actif ne l'est pas.
+
+---
+
+## Robustesse — test de reboot
+
+Reboot complet du CT supervision réalisé après mise en place. Les **cinq
+services systemd** remontent seuls au boot, sans intervention :
+
+- `prometheus`
+- `grafana-server`
+- `pve-exporter`
+- `prometheus-node-exporter`
+- `prometheus-alertmanager`
+
+Vérification : `systemctl is-active prometheus grafana-server pve-exporter
+prometheus-node-exporter prometheus-alertmanager` après reboot → tout est
+`active`. Aucun `enabled` oublié, aucune dépendance manquante.
+
+Sans ce test, on ne sait pas si la stack survit à une panne d'hôte ou à un
+reboot pour mise à jour kernel — c'est exactement le moment où on a le plus
+besoin de la supervision, donc le moment où il ne faut pas qu'elle soit
+manuelle à redémarrer.
 
 ---
 
@@ -169,30 +342,48 @@ Alertmanager refuse de démarrer en silence (les logs systemd disent juste
 
 Détails complets dans [`../pieges-resolus.md`](../pieges-resolus.md) :
 
-- **node_exporter en crash dans un LXC** — config systemd copiée depuis
-  l'hôte avec des binds qui n'existent pas dans le CT ; service refuse de
-  démarrer. Solution : config simplifiée pour LXC.
+- **pve-exporter renvoie 500** — l'API Proxmox `:8006` était bloquée par
+  l'INPUT DROP du firewall Proxmox depuis le LAN. Solution : Security Group
+  `monitoring-access` autorisant la source = CT monitoring vers `:8006` et
+  `:9100`.
+- **node_exporter du CT en crash-loop** — `ARGS="--web.listen-address=..."`
+  copié de la config de l'hôte, IP référencée inexistante dans le CT.
+  Solution : `ARGS=""`.
 - **Alertmanager refuse de démarrer** — fichier de config en `root:root 600`,
-  illisible par l'utilisateur `prometheus`. Solution : `chown` au bon
-  utilisateur ou ajustement de l'umask.
-- **DNS des LXC cassé par Tailscale MagicDNS héritée de l'hôte** — les CTs
-  pointaient vers `100.100.100.100` (resolver Tailscale) qui ne pouvait pas
-  résoudre les noms publics, scrape vers `*.example.com` impossible. Solution
-  côté hôte : `tailscale set --accept-dns=false`, puis les CTs héritent d'un
-  resolver fonctionnel.
+  illisible par l'utilisateur `prometheus`. Solution : `chown
+  prometheus:prometheus`. Complément : après 5 crashs rapides, systemd exige
+  un `reset-failed` avant de re-tenter.
+- **Target `localhost:9100` en `connection refused`** — paquet installé mais
+  service jamais démarré. Solution : `ss -tlnp | grep 9100` avant d'incriminer
+  la config.
+- **DNS LXC cassé par Tailscale MagicDNS héritée de l'hôte** — solution
+  globale `tailscale set --accept-dns=false` sur l'hôte, plus découplage de
+  chaque CT via `pct set --nameserver` (cf. piège dédié).
 
 ---
 
 ## État
 
-- LXC supervision dédié, isolé du LAN applicatif
-- `node_exporter` sur 5 nœuds (scrape réussi sur tous)
-- `pve-exporter` configuré avec un utilisateur Proxmox `PVEAuditor` + API
-  token (lecture seule)
-- Dashboards Node Exporter Full et Proxmox en service
-- 3 règles d'alerte actives (instance down, disque > 85 %, RAM > 90 %)
-- Notifications Telegram opérationnelles (testées par déclenchement contrôlé
-  d'une règle)
+- LXC supervision dédié, isolé du LAN applicatif (pas joignable depuis
+  Internet, pas exposé publiquement sur aucun port)
+- `node_exporter` sur **4 nœuds** (hôte Proxmox avec bind LAN restreint,
+  CT reverse-proxy, CT applicatif, CT supervision lui-même) — scrape OK sur
+  tous
+- `pve-exporter` dans un venv, configuré avec un utilisateur Proxmox
+  `PVEAuditor` + API token `--privsep 0` (lecture seule, audit lisible
+  d'un coup d'œil sur l'utilisateur)
+- Firewall Proxmox : Security Group `monitoring-access` ouvre uniquement le
+  CT supervision vers `:8006` et `:9100` de l'hôte ; tous les autres CTs
+  restent isolés
+- Dashboards officiels Grafana `1860` (Node Exporter Full) et `10347`
+  (Proxmox) en service
+- 3 règles Alertmanager actives, testées de bout en bout (arrêt volontaire
+  d'un exporter → `firing` à T+5 min → notification Telegram → `resolved`
+  au redémarrage)
+- Bot Telegram dédié, token rotaté après une exposition en capture d'écran
+  pendant le setup
+- Reboot complet du CT supervision validé : tous les services remontent
+  seuls
 
 ---
 
