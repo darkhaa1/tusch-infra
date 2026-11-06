@@ -45,6 +45,26 @@ Tous sont des CT **non privilégiés** sous Debian 12, démarrés au boot
 Tous les CT de `vmbr1` exposent `node_exporter` sur `:9100`, scrapé par le CT
 supervision.
 
+### Firewall par conteneur
+
+Le firewall Proxmox est actif sur **tous** les CT de production (option
+`enable: 1` et `firewall=1` sur la carte réseau). Politique par défaut en
+entrée : DROP. Chaque ouverture correspond à un flux identifié :
+
+| CT | Flux autorisés en entrée |
+|----|--------------------------|
+| 101 · Caddy | `80`/`443` depuis partout (DNAT) ; `9100` ← supervision ; `22` ← admin |
+| 102 · supervision | `3000` ← Caddy et admin ; `9090`/`9093` ← admin ; `3100` ← agents Alloy |
+| 103 · Authentik | `9000` ← Caddy et admin ; `9100` ← supervision ; `22` ← Ansible |
+| 104 · Ansible | `9100` ← supervision ; `22` ← admin |
+| 200 · application | `3000`/`3310` ← Caddy ; `9100` ← supervision ; `22` ← admin et Ansible |
+| 201 · portfolio | `80`/`3001`/`3002` ← Caddy ; `9100` ← supervision ; `22` ← admin |
+
+« admin » = l'hôte `10.10.0.1`, seule source du trafic d'administration
+(subnet router Tailscale avec SNAT). ICMP est autorisé depuis le LAN sur tous
+les CT. Les CT ne peuvent donc pas se joindre entre eux en dehors de ces flux :
+un CT applicatif compromis ne peut pas ouvrir de session SSH vers ses voisins.
+
 ### Snapshots
 
 Le CT applicatif garde deux points de retour, pris pendant son installation :
