@@ -1,0 +1,17 @@
+---
+- name: Déployer Prometheus node_exporter
+  hosts: monitored
+  become: false
+
+  tasks:
+    - name: Installer le paquet prometheus-node-exporter
+      ansible.builtin.apt:
+        name: prometheus-node-exporter
+        state: present
+        update_cache: true
+
+    - name: Démarrer et activer le service
+      ansible.builtin.service:
+        name: prometheus-node-exporter
+        state: started
+        enabled: true

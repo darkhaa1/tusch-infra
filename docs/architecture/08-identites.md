@@ -232,8 +232,48 @@ nommables :
 > source à autoriser au lieu d'une par appareil. *(Voir
 > [`02-reseau.md`](02-reseau.md) § Subnet router.)*
 
-> **À compléter** : durcissement firewall du CT d'identité (maillon 4 + option
-> `enable`, puis règle d'accès depuis le reverse proxy et l'admin uniquement).
+### Règles du CT d'identité
+
+Le firewall du CT Authentik est actif (maillons 3 et 4). Chaque règle
+correspond à un flux nommé :
+
+| Source | Port | Raison |
+|--------|------|--------|
+| Reverse proxy (`10.10.0.20`) | `9000/tcp` | Publication de `auth.tusch.mn` et *forward auth* |
+| Hôte / admin (`10.10.0.1`) | `9000/tcp` | Administration via Tailscale (SNAT) |
+| CT supervision (`10.10.0.40`) | `9100/tcp` | Scrape `node_exporter` |
+| CT Ansible (`10.10.0.60`) | `22/tcp` | Gestion de configuration |
+| LAN `10.10.0.0/24` | ICMP | Diagnostic |
+
+Tout le reste est rejeté par la politique par défaut.
+
+### Forward auth : protéger une application sans SSO natif
+
+Une petite application personnelle (`daybook`, hébergée dans le CT portfolio)
+n'a pas de gestion d'utilisateurs. Plutôt que d'en développer une, c'est le
+reverse proxy qui demande à Authentik « cet utilisateur est-il connecté ? »
+avant de laisser passer chaque requête :
+
+```caddyfile
+daybook.example.com {
+    route {
+        # Les URLs de l'outpost Authentik (login, callback) passent directement
+        reverse_proxy /outpost.goauthentik.io/* <IP_AUTHENTIK>:9000
+
+        # Toute autre requête : vérification de session auprès d'Authentik
+        forward_auth <IP_AUTHENTIK>:9000 {
+            uri /outpost.goauthentik.io/auth/caddy
+            copy_headers X-Authentik-Username X-Authentik-Email
+        }
+
+        reverse_proxy <IP_APP>:3002
+    }
+}
+```
+
+Le bloc `route` est indispensable : il garantit que Caddy applique les
+directives **dans l'ordre écrit** (outpost d'abord, contrôle ensuite, appli
+enfin). Sans lui, Caddy les réordonne selon son ordre interne.
 
 ---
 
@@ -251,11 +291,11 @@ permanent sur un secret est toujours supérieur.
 
 **En place** : IdP Authentik opérationnel, premier service (Grafana) en SSO
 OIDC, exposition publique des UIs `auth` et `grafana`, segmentation firewall du
-CT de supervision.
+CT de supervision et du CT d'identité, *forward auth* Caddy sur une
+application sans authentification native.
 
 **À venir** :
 
-- durcissement firewall du CT d'identité ;
 - mapping automatique des rôles Grafana par groupes (multi-utilisateurs) ;
 - branchements OIDC suivants : Proxmox, *forward auth* pour Prometheus /
   Alertmanager (les services sans auth native).

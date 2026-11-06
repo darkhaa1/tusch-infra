@@ -49,3 +49,55 @@ api.tusch.mn {
         format json
     }
 }
+
+# --- Fournisseur d'identité : Authentik ---
+auth.tusch.mn {
+    reverse_proxy 10.10.0.50:9000
+
+    log {
+        output file /var/log/caddy/auth.tusch.mn.log {
+            mode 640
+        }
+        format json
+    }
+}
+
+# --- Grafana : authentification déléguée à Authentik (OIDC, côté Grafana) ---
+grafana.tusch.mn {
+    reverse_proxy 10.10.0.40:3000
+
+    log {
+        output file /var/log/caddy/grafana.tusch.mn.log {
+            mode 640
+        }
+        format json
+    }
+}
+
+# --- Portfolio statique ---
+<PORTFOLIO_DOMAIN>, www.<PORTFOLIO_DOMAIN> {
+    reverse_proxy 10.10.0.31:80
+}
+
+# --- Endpoint d'uptime (lecture seule, JSON) ---
+health.<PORTFOLIO_DOMAIN> {
+    reverse_proxy 10.10.0.31:3001
+}
+
+# --- Application sans SSO natif, protégée par forward auth Authentik ---
+daybook.<PORTFOLIO_DOMAIN> {
+    # route = ordre d'exécution garanti tel qu'écrit
+    route {
+        # 1. Les URLs de l'outpost (login, callback) passent directement
+        reverse_proxy /outpost.goauthentik.io/* 10.10.0.50:9000
+
+        # 2. Toute autre requête : Authentik valide la session ou redirige vers le login
+        forward_auth 10.10.0.50:9000 {
+            uri /outpost.goauthentik.io/auth/caddy
+            copy_headers X-Authentik-Username X-Authentik-Email
+        }
+
+        # 3. Session valide : l'application reçoit la requête
+        reverse_proxy 10.10.0.31:3002
+    }
+}

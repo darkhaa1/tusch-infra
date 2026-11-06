@@ -1,0 +1,51 @@
+# /etc/prometheus/prometheus.yml — CT supervision (tusch-monitor-01)
+#
+# Configuration réellement en service, commentaires ajoutés.
+# Les IP privées 10.10.0.x (RFC 1918) sont conservées pour la lisibilité.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['localhost:9093']
+
+rule_files:
+  - /etc/prometheus/rules.yml
+
+scrape_configs:
+  # Prometheus se supervise lui-même
+  - job_name: prometheus
+    scrape_interval: 5s
+    scrape_timeout: 5s
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Métriques OS — node_exporter sur chaque nœud (:9100)
+  - job_name: node
+    static_configs:
+      - targets:
+          - 10.10.0.1:9100     # hôte Proxmox
+          - 10.10.0.20:9100    # CT 101 · reverse proxy
+          - 10.10.0.30:9100    # CT 200 · application
+          - localhost:9100     # CT 102 · supervision
+          - 10.10.0.31:9100    # CT 201 · portfolio
+          - 10.10.0.50:9100    # CT 103 · Authentik
+          - 10.10.0.60:9100    # CT 104 · Ansible
+
+  # Métriques Proxmox — pve-exporter (exporter "proxy", pattern relabel)
+  - job_name: pve
+    static_configs:
+      - targets: ['10.10.0.1']        # hyperviseur à interroger
+    metrics_path: /pve
+    params:
+      module: [default]
+    relabel_configs:
+      - source_labels: [__address__]  # 1. la cible devient le paramètre ?target=
+        target_label: __param_target
+      - source_labels: [__param_target]  # 2. le label instance garde le nom de l'hyperviseur
+        target_label: instance
+      - target_label: __address__     # 3. on scrape en réalité l'exporter local
+        replacement: localhost:9221

@@ -11,8 +11,8 @@ Configurations de l'hôte Proxmox VE 8, anonymisées.
 
 | Fichier | Rôle |
 |---------|------|
-| `network/interfaces.example` | Configuration réseau de l'hôte (bridges, NAT, DNAT) |
-| `firewall/cluster.fw.example` | Firewall Proxmox niveau datacenter (security groups) |
+| `network/interfaces.example` | Configuration réseau de l'hôte (bridges production et lab, NAT, DNAT) |
+| `firewall/cluster.fw.example` | Firewall Proxmox niveau datacenter (security groups : admin, Tailscale, web, supervision, Authentik) |
 | `firewall/host.fw.example` | Firewall Proxmox niveau node |
 | `systemd/lvm-pool-loopback.service` | Persistance du pool LVM-thin au reboot |
 
@@ -34,7 +34,14 @@ vmbr0  (bridge WAN — IP publique)
         vmbr1  (LAN privé 10.10.0.0/24)
             ├─→  CT 101 · Caddy        10.10.0.20   ◄── reçoit le trafic web (DNAT)
             ├─→  CT 200 · tusch-app    10.10.0.30
+            ├─→  CT 201 · portfolio    10.10.0.31
+            ├─→  CT 102 · monitoring   10.10.0.40
+            ├─→  CT 103 · authentik    10.10.0.50
+            ├─→  CT 104 · ansible      10.10.0.60
             └─→  CT 900 · template     (read-only)
+
+vmbr2  (LAN du lab 10.20.0.0/24, VLAN-aware) ── VM 300 OPNsense (patte LAN, trunk 10/20)
+vmbr3  (transit 10.30.0.252/30, NAT)         ── VM 300 OPNsense (patte WAN)
 ```
 
 ### Principe

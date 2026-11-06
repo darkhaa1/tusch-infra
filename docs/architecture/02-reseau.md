@@ -27,14 +27,26 @@ vmbr1  ── LAN privé ──  10.10.0.0/24 (réseau isolé)
    │
    ├─► CT 101 · Caddy        10.10.0.20
    ├─► CT 200 · tusch-app    10.10.0.30
+   ├─► CT 201 · portfolio    10.10.0.31
+   ├─► CT 102 · monitoring   10.10.0.40
+   ├─► CT 103 · authentik    10.10.0.50
+   ├─► CT 104 · ansible      10.10.0.60
    └─► CT 900 · template     (read-only)
+
+vmbr2  ── LAN du lab ──  10.20.0.0/24, VLAN-aware (derrière OPNsense)
+vmbr3  ── transit WAN OPNsense ──  10.30.0.252/30 (NAT vers vmbr0)
 ```
 
 - **vmbr0 (WAN)** porte l'unique IP publique. L'interface physique y est
   rattachée en mode `manual` (sans IP propre) : elle ne sert que de port au
   bridge.
 - **vmbr1 (LAN privé)** est un réseau interne `10.10.0.0/24`, totalement isolé
-  d'Internet. Les conteneurs y vivent sans IP publique.
+  d'Internet. Les conteneurs de production y vivent sans IP publique.
+- **vmbr2 / vmbr3** forment le lab de segmentation : `vmbr3` est le lien WAN
+  d'OPNsense (un /30 natté par l'hôte), `vmbr2` est son LAN, découpé en VLANs
+  (voir [`05-segmentation-vlan.md`](05-segmentation-vlan.md)). Le lab est
+  ainsi étanche vis-à-vis de la production : il sort par son propre NAT et ne
+  partage aucun bridge avec `vmbr1`.
 
 ### Pourquoi cette séparation
 
@@ -85,7 +97,23 @@ lisible :
 | `10.10.0.1` | Hôte Proxmox | Passerelle du LAN privé |
 | `10.10.0.20` | CT 101 · Caddy | Reverse proxy (reçoit le DNAT) |
 | `10.10.0.30` | CT 200 · tusch-app | Application (Next.js + NestJS + PostgreSQL) |
+| `10.10.0.31` | CT 201 · portfolio | Portfolio statique, endpoint d'uptime, outil perso |
+| `10.10.0.40` | CT 102 · monitoring | Prometheus, Alertmanager, Grafana, Loki |
+| `10.10.0.50` | CT 103 · authentik | Fournisseur d'identité (SSO) |
+| `10.10.0.60` | CT 104 · ansible | Nœud de contrôle Ansible |
 | `10.10.0.250` | CT 900 · template | Modèle de conteneur (arrêté) |
+
+Côté lab (`vmbr2`, derrière OPNsense) :
+
+| Réseau | Rôle | Machines |
+|--------|------|----------|
+| `10.20.0.0/24` | LAN natif du lab (hôte en `.254`) | OPNsense |
+| `10.20.10.0/24` — VLAN 10 | SERVEURS | CT 998 `lab-serveur`, VM 301 `tusch-dc-01` |
+| `10.20.20.0/24` — VLAN 20 | CLIENTS | CT 999 `lab-client`, VM 302 `tusch-ws-01` |
+| `10.30.0.252/30` | Transit WAN OPNsense (hôte en `.254`) | VM 300 `opnsense-lab` |
+
+L'inventaire complet (ports, services, domaines) est dans
+[`09-inventaire.md`](09-inventaire.md).
 
 ## Convention de numérotation des conteneurs (CTID)
 
@@ -135,8 +163,17 @@ les LANs internes au tailnet, et tout appareil du tailnet atteint directement
 les IPs internes au navigateur, sans aucun tunnel.
 
 ```bash
-tailscale set --advertise-routes=10.10.0.0/24,10.20.0.0/24
+tailscale set --advertise-routes=10.10.0.0/24,10.20.0.0/24,10.20.10.0/24,10.20.20.0/24
 ```
+
+Les deux sous-réseaux VLAN du lab sont annoncés en plus du LAN natif
+`10.20.0.0/24` : derrière OPNsense, ce sont des réseaux distincts que l'hôte
+ne voit pas directement.
+
+> Le CT applicatif (`tusch-app-01`) fait aussi tourner son propre client
+> Tailscale (accès `/dev/net/tun` délégué au CT). C'est ce qui permet de s'y
+> connecter en SSH directement par son nom sur le tailnet, sans passer par
+> l'hôte.
 
 Trois conditions, faute de quoi rien ne route :
 
@@ -159,6 +196,22 @@ Conséquence pratique : les règles firewall par-CT n'ont qu'**une** source admi
 à autoriser, au lieu d'une par appareil du tailnet. C'est ce qui rend la
 segmentation par-CT simple à écrire (voir
 [`08-identites.md`](08-identites.md) § Segmentation firewall par conteneur).
+
+> **Attention — interaction avec le firewall PVE.** Tailscale marque les
+> paquets du tailnet, et cette marque les suit jusque dans les mini-bridges
+> `fwbr` des CT. Sans correction, les paquets y sont renattés une seconde
+> fois et jetés, et ils contournent le firewall du CT. Une règle `mangle`
+> efface la marque à l'entrée des `fwbr` (voir
+> [`../pieges-resolus.md`](../pieges-resolus.md) #26).
+
+### Contrôle d'accès du tailnet : les ACL Tailscale
+
+`tailscaled` insère sa chaîne `ts-input` **avant** celle du firewall Proxmox
+et y accepte tout ce qui arrive par `tailscale0`. Le firewall de l'hôte ne
+filtre donc pas le trafic du tailnet : le contrôle d'accès se fait dans les
+**ACL Tailscale** (console d'administration). Politique appliquée : refus par
+défaut, seul le poste d'admin atteint l'hôte et les sous-réseaux annoncés ;
+les autres nœuds du tailnet (dont le CT applicatif) n'atteignent rien.
 
 ### Filet de secours — alias SSH
 

@@ -1,0 +1,42 @@
+// /etc/alloy/config.alloy — CT reverse proxy (tusch-caddy-01)
+// Configuration en service : logs d'accès JSON de Caddy → parsing → Loki.
+
+// Découverte des fichiers de logs Caddy
+local.file_match "caddy" {
+  path_targets = [
+    {__path__ = "/var/log/caddy/*.log", job = "caddy"},
+  ]
+}
+
+// Lecture des fichiers
+loki.source.file "caddy" {
+  targets    = local.file_match.caddy.targets
+  forward_to = [loki.process.caddy.receiver]
+}
+
+// Parsing JSON des logs Caddy + extraction de labels utiles
+loki.process "caddy" {
+  forward_to = [loki.write.default.receiver]
+
+  stage.json {
+    expressions = {
+      status   = "status",
+      method   = "request.method",
+      host     = "request.host",
+    }
+  }
+
+  stage.labels {
+    values = {
+      status = "",
+      host   = "",
+    }
+  }
+}
+
+// Envoi vers Loki sur CT 102
+loki.write "default" {
+  endpoint {
+    url = "http://10.10.0.40:3100/loki/api/v1/push"
+  }
+}
