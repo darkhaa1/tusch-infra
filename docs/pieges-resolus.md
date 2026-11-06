@@ -961,4 +961,48 @@ d'accès du tailnet se fait donc dans les **ACL Tailscale**, pas dans
 
 ---
 
+## 27. vzdump des CT en échec (`tar ... exit code 2`) — répertoire de dump en `700`
+
+**Où** : sauvegarde vers un `--dumpdir` personnalisé.
+
+**Symptôme** : les **VM** se sauvegardent, tous les **CT** échouent :
+`ERROR: Backup of VM 200 failed - command '... lxc-usernsexec -m u:0:100000:65536 ... tar cpf - ...' failed: exit code 2`.
+
+**Cause** : le répertoire de dump avait été créé dans une session en
+`umask 077` (mode `700`, propriétaire root). Pour un CT **non privilégié**,
+vzdump lance `tar` via `lxc-usernsexec`, sous l'UID remappé `100000` : ce
+processus n'a pas le droit d'écrire son `.tmp` dans le répertoire. Les VM ne
+sont pas concernées (archive écrite par root).
+
+**Fix** : `chmod 755` sur le répertoire (comme `/var/lib/vz/dump` par défaut),
+forcé dans le script avant chaque sauvegarde.
+
+**Leçon** : un `umask` restrictif hérité de la création d'un secret ne doit pas
+contaminer les répertoires de travail créés dans la même session.
+
+---
+
+## 28. Postfix « désactivé » mais toujours à l'écoute sur `:25`
+
+**Où** : CT Debian 12.
+
+**Symptôme** : `systemctl disable --now postfix` réussit, `is-active` répond
+`inactive`… mais `ss -tln` montre toujours `:25`.
+
+**Cause** : sur Debian 12, `postfix.service` n'est qu'une coquille ; le démon
+tourne dans l'**instance** `postfix@-.service`.
+
+**Fix** :
+
+```bash
+systemctl disable --now postfix@-.service
+systemctl mask postfix.service postfix@-.service   # empêche toute réactivation
+ss -tlnH 'sport = :25' | wc -l                      # doit afficher 0
+```
+
+**Leçon** : vérifier l'effet réel (port fermé), pas le code retour de la
+commande.
+
+---
+
 *Document mis à jour au fil de la mise en place de l'infrastructure.*

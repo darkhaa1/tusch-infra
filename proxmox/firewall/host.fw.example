@@ -22,5 +22,4 @@ enable: 1
 GROUP admin-access
 GROUP tailscale-access
 GROUP web-public
-GROUP authentik
 GROUP monitoring-access

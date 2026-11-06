@@ -26,3 +26,29 @@ groups:
           severity: warning
         annotations:
           summary: "RAM > 90% sur {{ $labels.instance }} depuis 10 min"
+
+      # --- Sauvegardes (métriques écrites par backup-restic.sh via le
+      #     textfile collector de node_exporter sur l'hôte) ---
+      - alert: BackupFailed
+        expr: backup_restic_last_status == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Derniere sauvegarde restic en echec sur {{ $labels.instance }} (journalctl -u backup-restic)"
+
+      - alert: BackupTooOld
+        expr: time() - backup_restic_last_success_timestamp_seconds > 26 * 3600
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Aucune sauvegarde restic reussie depuis plus de 26 h sur {{ $labels.instance }}"
+
+      - alert: BackupMetricsMissing
+        expr: absent(backup_restic_last_run_timestamp_seconds)
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Metriques de sauvegarde restic absentes (textfile collector de l'hote)"

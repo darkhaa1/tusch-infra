@@ -124,7 +124,7 @@ Inventaire détaillé (IP, ports, domaines, ressources) :
 | IDS/IPS | Suricata sur OPNsense (mode inline Netmap, rulesets ET Open) |
 | Supervision | Prometheus + Grafana + Alertmanager (notifications Telegram) |
 | Logs | Loki + Grafana Alloy (rétention 31 jours) |
-| Sauvegardes | vzdump quotidien vers Hetzner Storage Box (7 j / 4 sem. / 3 mois) |
+| Sauvegardes | vzdump + restic chiffré vers Hetzner Storage Box (7 j / 4 sem. / 3 mois), restauration testée |
 | Automatisation | Ansible (CT de contrôle dédié) |
 | Identités (IAM) | Authentik — IdP OIDC/SAML/LDAP, SSO (Docker dans LXC dédié) |
 | VPN admin | Tailscale |
@@ -172,10 +172,10 @@ blocage validé, **supervision Prometheus + Grafana + Alertmanager** avec
 notifications Telegram. Accès admin direct par **subnet router Tailscale** et **SSO
 centralisé Authentik** (Grafana en OIDC, *forward auth* sur une application
 sans SSO natif). **Logs centralisés** (Loki + Alloy), **sauvegardes
-quotidiennes hors serveur** (vzdump vers Storage Box), premier playbook
+quotidiennes chiffrées hors serveur** (vzdump + restic, restauration testée), premier playbook
 **Ansible**, et un **lab Active Directory** (Windows Server + Windows 11) dans
 les VLANs du lab.
 
-**À venir** : chiffrement des sauvegardes côté client, généralisation
+**À venir** : généralisation
 d'Ansible (déploiement des CT, durcissement), SIEM (Wazuh), collecte de logs
 étendue à l'hôte et à l'application.

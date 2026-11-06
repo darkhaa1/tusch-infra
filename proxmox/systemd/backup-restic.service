@@ -1,0 +1,10 @@
+[Unit]
+Description=Sauvegarde chiffree restic de tous les CT/VM
+After=network-online.target pve-storage.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/backup-restic.sh
+Nice=10
+IOSchedulingClass=idle
