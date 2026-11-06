@@ -1,7 +1,8 @@
 # Supervision — fichiers de configuration
 
-Notes et configurations anonymisées de la stack de supervision
-(Prometheus + Grafana + Alertmanager) hébergée dans un conteneur LXC dédié.
+Configurations anonymisées de la stack de supervision et de logs
+(Prometheus, Alertmanager, Grafana, Loki, Alloy), hébergée dans un conteneur
+LXC dédié (`tusch-monitor-01`, `10.10.0.40`).
 
 > Architecture, choix techniques et pièges : voir
 > [`../docs/architecture/07-supervision.md`](../docs/architecture/07-supervision.md).
@@ -10,16 +11,13 @@ Notes et configurations anonymisées de la stack de supervision
 
 ## Contenu
 
-*(À enrichir au fil de la mise en place.)*
-
 | Fichier | Contenu |
 |---------|---------|
-| (à venir) `prometheus.example.yml` | Scrape configs anonymisés (job_name, target labels, intervals) |
+| `prometheus.example.yml` | Scrape configs : Prometheus, `node_exporter` sur 7 nœuds, `pve-exporter` (pattern relabel) |
+| `rules.example.yml` | Règles d'alerte `InstanceDown`, `DiskAlmostFull`, `HighMemory` |
+| `loki-config.example.yml` | Loki mono-instance, schéma v13 TSDB, rétention 31 jours |
+| `alloy-caddy.example.alloy` | Agent Grafana Alloy du reverse proxy : logs Caddy → Loki |
 | (à venir) `alertmanager.example.yml` | Routing, receivers, templates Telegram (sans secrets) |
-| (à venir) `rules/instance-down.example.yml` | Règle `up == 0` pendant N minutes |
-| (à venir) `rules/disk-saturation.example.yml` | Règle `disk_avail < 15%` |
-| (à venir) `rules/memory-pressure.example.yml` | Règle `mem_used > 90%` |
-| (à venir) `node_exporter.service.example` | Unit systemd pour LXC (sans les binds spécifiques à l'hôte) |
 | (à venir) `pve-exporter.example.yml` | Config exporter avec token Proxmox `<API_TOKEN>` |
 
 ## Conventions

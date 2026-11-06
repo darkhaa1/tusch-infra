@@ -1,4 +1,4 @@
-# Supervision — Prometheus, Grafana, Alertmanager
+# Supervision — Prometheus, Grafana, Alertmanager, Loki
 
 Stack de supervision et d'alerting, hébergée dans un conteneur LXC dédié et
 isolée du chemin de production : un crash du monitoring ne touche pas l'app,
@@ -240,14 +240,18 @@ local au CT). Deux dashboards officiels importés depuis grafana.com :
   `pve-exporter` (nombre de VMs/CTs par état, utilisation des storages,
   métriques cluster).
 
-### Aucune exposition publique de l'UI Grafana
+### Accès à l'UI Grafana
 
-L'accès passe **uniquement** par tunnel SSH (`ssh -L 3000:localhost:3000 ...`)
-depuis le poste d'admin via le canal hors-bande (cf.
-[`03-securite.md`](03-securite.md) couche 7). Les ports `9090` (Prometheus),
-`9100` (node_exporter), `3000` (Grafana) **ne sont pas exposés sur Internet** —
-vérifié depuis l'extérieur, ils ne répondent pas. Le seul chemin d'admin
-passe par SSH/Tailscale, pas par une UI web publiée.
+Au départ, Grafana n'était joignable que par tunnel SSH
+(`ssh -L 3000:localhost:3000 ...`). Depuis la mise en place d'Authentik, l'UI
+est publiée sur `grafana.tusch.mn` via le reverse proxy, **derrière un SSO
+OIDC** (voir [`08-identites.md`](08-identites.md)). Le firewall du CT
+n'accepte le port `3000` que depuis le reverse proxy et l'admin.
+
+Les ports `9090` (Prometheus), `9093` (Alertmanager), `3100` (Loki) et `9100`
+(node_exporter) restent **non exposés sur Internet** : ces services n'ont pas
+d'authentification native, ils ne sont joignables que depuis le LAN (admin via
+Tailscale).
 
 ---
 
@@ -362,13 +366,54 @@ Détails complets dans [`../pieges-resolus.md`](../pieges-resolus.md) :
 
 ---
 
+## Logs centralisés — Loki + Grafana Alloy
+
+Les métriques disent *que* quelque chose ne va pas ; les logs disent
+*pourquoi*. Loki a été ajouté dans le même CT que Prometheus, et sert de
+datasource à Grafana à côté de Prometheus.
+
+```
+CT reverse proxy                      CT identité
+┌───────────────────┐                 ┌──────────────────────┐
+│ Alloy             │                 │ Alloy                │
+│ /var/log/caddy/*  │                 │ discovery.docker     │
+│ job="caddy"       │                 │ job="authentik"      │
+└─────────┬─────────┘                 └──────────┬───────────┘
+          │  push HTTP :3100/loki/api/v1/push    │
+          └──────────────────┬───────────────────┘
+                             ▼
+                  CT supervision : Loki
+                  stockage filesystem, schéma v13 (TSDB)
+                  rétention 744 h (31 jours)
+```
+
+- **Grafana Alloy** remplace Promtail (déprécié) comme agent de collecte. Il
+  n'écoute qu'en local (`127.0.0.1:12345`, UI de debug) et **pousse** vers Loki.
+- Sur le reverse proxy, Alloy lit les logs d'accès JSON de Caddy, un fichier
+  par site.
+- Sur le CT d'identité, Alloy découvre les conteneurs Docker via le socket et
+  étiquette chaque flux par nom de conteneur.
+- Loki tourne en mono-instance, stockage sur disque local, compactor activé
+  pour appliquer la rétention.
+- Firewall : le port `3100` du CT supervision n'accepte que les deux CT
+  émetteurs.
+
+Loki n'a pas d'authentification (`auth_enabled: false`, mode mono-tenant) :
+c'est acceptable parce qu'il n'est joignable que depuis le LAN, par les
+sources autorisées.
+
+---
+
 ## État
 
-- LXC supervision dédié, isolé du LAN applicatif (pas joignable depuis
-  Internet, pas exposé publiquement sur aucun port)
-- `node_exporter` sur **4 nœuds** (hôte Proxmox avec bind LAN restreint,
-  CT reverse-proxy, CT applicatif, CT supervision lui-même) — scrape OK sur
-  tous
+- LXC supervision dédié, isolé du LAN applicatif (Grafana publié derrière SSO,
+  aucun autre port exposé)
+- `node_exporter` sur **7 nœuds** (hôte Proxmox,
+  reverse proxy, application, supervision, portfolio, identité, Ansible) —
+  scrape OK sur tous. Le déploiement sur les nouveaux CT se fait par Ansible
+  (voir [`../../ansible/`](../../ansible/)).
+- Loki + Alloy en service : logs Caddy et Authentik centralisés, 31 jours de
+  rétention
 - `pve-exporter` dans un venv, configuré avec un utilisateur Proxmox
   `PVEAuditor` + API token `--privsep 0` (lecture seule, audit lisible
   d'un coup d'œil sur l'utilisateur)
@@ -389,7 +434,8 @@ Détails complets dans [`../pieges-resolus.md`](../pieges-resolus.md) :
 
 ## Pour aller plus loin
 
-- **Loki** pour la centralisation des logs (cf. perspective du README)
+- Étendre la collecte de logs (Alloy) à l'application, à l'hôte (journal
+  systemd, fail2ban) et au firewall Proxmox
 - **Blackbox exporter** pour la supervision des endpoints HTTPS publics
   (latence, expiration certificats, codes 200)
 - Export des alertes Suricata (`eve.json` cf.

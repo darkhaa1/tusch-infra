@@ -143,6 +143,53 @@ ZFS, décidés **avant** l'installation.
 
 ---
 
+> Note : le numéro de périphérique loopback n'est pas fixe. La mise en place
+> manuelle utilisait `/dev/loop3` ; après reboot, l'unit systemd prend le
+> premier libre (`/dev/loop0` aujourd'hui). C'est sans importance : LVM
+> retrouve le VG par sa signature, pas par le nom du périphérique.
+
+### Occupation actuelle
+
+Le pool `data` est rempli à environ 48 %. Le VG ne garde que ~5 Go libres (la
+marge prévue pour les métadonnées), il faut donc surveiller le remplissage du
+**pool**, pas celui du VG.
+
+Un volume thin peut afficher un taux d'occupation bien plus haut que le `df`
+vu de l'intérieur du conteneur : les blocs libérés par le système de fichiers
+ne sont rendus au pool qu'après un `fstrim`. Commande de rattrapage pour tous
+les CT : `pct fstrim <CTID>`.
+
+---
+
+## Sauvegardes
+
+Les snapshots protègent contre une erreur de manipulation, pas contre la perte
+de l'hôte. Les sauvegardes complètes partent donc **hors du serveur**.
+
+| | |
+|---|---|
+| Outil | `vzdump`, job planifié Proxmox (Datacenter → Backup) |
+| Périmètre | Tous les CT et toutes les VM (`all 1`) |
+| Horaire | Tous les jours à 03:00 |
+| Mode | `snapshot` — pas d'arrêt des invités |
+| Compression | `zstd` |
+| Cible | Hetzner Storage Box, montée en CIFS comme storage `storagebox-backup` |
+| Rétention | `keep-daily=7, keep-weekly=4, keep-monthly=3` |
+
+La rétention est portée par le **job**, pas par le storage (qui reste en
+`keep-all`) : c'est le job qui fait le ménage après chaque passage.
+
+> **Restauration** : une sauvegarde qui n'a jamais été restaurée n'est qu'une
+> hypothèse. Test de restauration recommandé : `pct restore <nouvel-ID>
+> <archive>` sur un ID libre, vérifier le démarrage, puis détruire le CT de
+> test.
+
+**À venir** : chiffrement des sauvegardes côté client avant envoi (restic ou
+Proxmox Backup Server), pour que l'hébergeur de la Storage Box ne puisse pas
+lire les données.
+
+---
+
 ## Leçons
 
 1. **Le stockage se pense avant l'installation de l'hyperviseur.** L'ext4 par

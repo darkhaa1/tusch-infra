@@ -1,0 +1,42 @@
+# /etc/loki/config.yml — Loki mono-instance (CT supervision)
+#
+# Pas d'authentification (mono-tenant) : Loki n'est joignable que depuis le
+# LAN, et le firewall du CT n'autorise le port 3100 qu'aux agents Alloy.
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /var/lib/loki
+  storage:
+    filesystem:
+      chunks_directory: /var/lib/loki/chunks
+      rules_directory: /var/lib/loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  retention_period: 744h          # 31 jours
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+
+compactor:
+  working_directory: /var/lib/loki/compactor
+  retention_enabled: true         # sans ça, retention_period n'est pas appliquée
+  delete_request_store: filesystem

@@ -37,16 +37,26 @@ flowchart TD
     end
 
     subgraph DC["🏢 Hetzner — Falkenstein"]
-        HFW["🛡️ Robot Firewall<br/>filtrage réseau amont"]
+        HFW["🛡️ Firewall hébergeur<br/>filtrage réseau amont"]
 
         subgraph PVE["🖥️ Serveur AX41 — Proxmox VE 8"]
-            HOST["Hôte Proxmox<br/>🔥 Datacenter Firewall — DROP par défaut"]
-            TS["🔐 Tailscale<br/>accès admin privé"]
+            HOST["Hôte Proxmox<br/>🔥 Firewall — DROP par défaut"]
+            TS["🔐 Tailscale<br/>subnet router admin"]
 
-            subgraph LAN["🔒 LAN privé — vmbr1 · 10.10.0.0/24"]
+            subgraph LAN["🔒 LAN production — vmbr1 · 10.10.0.0/24"]
                 CADDY["CT 101 · Caddy<br/>reverse proxy + TLS auto"]
                 APP["CT 200 · tusch-app<br/>Next.js · NestJS · PostgreSQL"]
+                PORT["CT 201 · portfolio<br/>site statique · uptime · daybook"]
+                AUTH["CT 103 · Authentik<br/>SSO OIDC · forward auth"]
+                MON["CT 102 · supervision<br/>Prometheus · Grafana · Loki"]
+                ANS["CT 104 · Ansible"]
                 TPL["CT 900 · template<br/>read-only"]
+            end
+
+            subgraph LAB["🧪 Lab — vmbr2 VLAN-aware"]
+                OPN["VM 300 · OPNsense<br/>Suricata IDS/IPS"]
+                V10["VLAN 10 SERVEURS<br/>CT 998 · VM 301 (AD DC)"]
+                V20["VLAN 20 CLIENTS<br/>CT 999 · VM 302 (Win 11)"]
             end
         end
     end
@@ -54,10 +64,17 @@ flowchart TD
     CF -->|"Proxied — IP réelle masquée"| HFW
     HFW -->|"80 / 443"| HOST
     HOST -->|"DNAT"| CADDY
-    CADDY -->|"reverse proxy → :3000 / :3310"| APP
+    CADDY --> APP
+    CADDY --> PORT
+    CADDY --> AUTH
+    CADDY -->|"SSO"| MON
     TS -.-> HOST
     TPL -.->|"clone"| APP
+    HOST -->|"vmbr3 · NAT"| OPN
+    OPN --> V10
+    OPN --> V20
 ```
+
 
 | Couche | Composants |
 |--------|------------|
@@ -67,9 +84,11 @@ flowchart TD
 | Segmentation | OPNsense (VLANs 802.1Q, firewall directionnel inter-VLAN) |
 | Sécurité | Suricata IDS/IPS (inline Netmap), fail2ban, Tailscale (admin), Wazuh (à venir) |
 | Stockage | LVM-thin sur loopback (snapshots LXC), RAID 1 mdadm |
-| Backups | vzdump + restic vers Hetzner Storage Box |
-| Supervision | Prometheus + Grafana + Alertmanager (Telegram) — Loki (à venir) |
-| Identités (IAM) | Authentik (OIDC/SAML/LDAP) — SSO, premier service : Grafana |
+| Backups | vzdump quotidien vers Hetzner Storage Box (chiffrement client à venir) |
+| Supervision | Prometheus + Grafana + Alertmanager (Telegram) — Loki + Alloy (logs) |
+| Identités (IAM) | Authentik (OIDC/SAML/LDAP) — SSO Grafana, forward auth Caddy |
+| Automatisation | Ansible (CT de contrôle dédié) |
+| Lab | OPNsense + VLANs, Active Directory (Windows Server + Windows 11) |
 
 ---
 
@@ -89,16 +108,16 @@ flowchart TD
 
 - **Hyperviseur** : Proxmox VE 8 (community)
 - **OS hôte** : Debian 12 Bookworm
-- **Conteneurisation** : LXC (Linux) + KVM (Windows lab, OPNsense)
+- **Conteneurisation** : LXC (Linux) + KVM (lab Windows Server / Windows 11, OPNsense)
 - **Reverse proxy** : Caddy 2
 - **Segmentation réseau** : OPNsense — VLANs 802.1Q, Kea DHCP, firewall directionnel
 - **IDS/IPS** : Suricata sur OPNsense (mode inline Netmap, rulesets ET Open)
 - **VPN admin** : Tailscale
 - **Supervision** : Prometheus, Grafana, Alertmanager (notifications Telegram)
 - **Identités (IAM)** : Authentik — IdP OIDC/SAML/LDAP, SSO (Docker dans LXC dédié)
-- **Automatisation** : Ansible *(à venir)*
+- **Automatisation** : Ansible (premiers playbooks)
 - **CI/CD** : GitHub Actions *(à venir)*
-- **Logs centralisés** : Loki *(à venir)*
+- **Logs centralisés** : Loki + Grafana Alloy
 
 ---
 
@@ -106,12 +125,13 @@ flowchart TD
 
 | Dossier | Contenu |
 |---------|---------|
-| `docs/architecture/` | Documentation détaillée par domaine (réseau, sécurité, segmentation VLAN, IDS/IPS, supervision, identités/IAM, stockage) |
+| `docs/architecture/` | Documentation détaillée par domaine (réseau, sécurité, segmentation VLAN, IDS/IPS, supervision, identités/IAM, stockage, inventaire) |
 | `docs/articles/` | Articles techniques (pièges résolus, retours d'expérience) |
 | `docs/pieges-resolus.md` | Index des problèmes résolus pendant la mise en place |
 | `proxmox/` | Configurations Proxmox (réseau, firewall, systemd) — anonymisées |
 | `caddy/` | Configurations Caddy — anonymisées |
-| `monitoring/` | Notes et fichiers de configuration de la stack de supervision |
+| `monitoring/` | Configurations Prometheus, règles d'alerte, Loki — anonymisées |
+| `ansible/` | Inventaire et playbooks Ansible — anonymisés |
 | `diagrams/` | Diagrammes d'architecture (sources Mermaid + exports) |
 
 ---
