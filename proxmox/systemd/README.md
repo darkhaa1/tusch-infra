@@ -70,3 +70,24 @@ Quand un storage dépend d'un montage manuel (loopback, point réseau, etc.),
 il faut une unit systemd avec les bonnes directives d'ordre (`Before=`,
 `RequiresMountsFor=`) pour que tout remonte dans le bon ordre au boot.
 Sinon, le serveur démarre mais les services qui dépendent du storage échouent.
+---
+
+## `backup-restic.service` / `.timer`
+
+Sauvegarde chiffrée quotidienne (02:00, `Persistent=true` : rattrapée au
+démarrage si le serveur était éteint à l'heure prévue). Lance
+[`../../scripts/backup-restic.sh`](../../scripts/backup-restic.sh).
+
+- `Type=oneshot` : le service vit le temps de la sauvegarde.
+- `Nice=10` + `IOSchedulingClass=idle` : les sauvegardes passent **après** la
+  production en cas de concurrence CPU ou disque.
+
+Conception, restauration et test : voir
+[`../../docs/architecture/04-stockage.md`](../../docs/architecture/04-stockage.md) § Sauvegardes.
+
+## `pct-fstrim.service` / `.timer`
+
+Chaque dimanche, `pct fstrim` sur tous les CT en marche. Le `fstrim.timer` de
+Debian ne traite que les systèmes de fichiers de l'hôte : les blocs libérés
+**dans** les CT n'étaient jamais rendus au thin pool (un volume affichait
+95 % d'occupation côté LVM pour 34 % réellement utilisés).

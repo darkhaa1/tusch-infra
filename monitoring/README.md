@@ -14,7 +14,7 @@ LXC dédié (`tusch-monitor-01`, `10.10.0.40`).
 | Fichier | Contenu |
 |---------|---------|
 | `prometheus.example.yml` | Scrape configs : Prometheus, `node_exporter` sur 7 nœuds, `pve-exporter` (pattern relabel) |
-| `rules.example.yml` | Règles d'alerte `InstanceDown`, `DiskAlmostFull`, `HighMemory` |
+| `rules.example.yml` | Règles d'alerte `InstanceDown`, `DiskAlmostFull`, `HighMemory`, `BackupFailed`, `BackupTooOld`, `BackupMetricsMissing` |
 | `loki-config.example.yml` | Loki mono-instance, schéma v13 TSDB, rétention 31 jours |
 | `alloy-caddy.example.alloy` | Agent Grafana Alloy du reverse proxy : logs Caddy → Loki |
 | (à venir) `alertmanager.example.yml` | Routing, receivers, templates Telegram (sans secrets) |

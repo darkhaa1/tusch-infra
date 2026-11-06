@@ -84,7 +84,7 @@ flowchart TD
 | Segmentation | OPNsense (VLANs 802.1Q, firewall directionnel inter-VLAN) |
 | Sécurité | Suricata IDS/IPS (inline Netmap), fail2ban, Tailscale (admin), Wazuh (à venir) |
 | Stockage | LVM-thin sur loopback (snapshots LXC), RAID 1 mdadm |
-| Backups | vzdump quotidien vers Hetzner Storage Box (chiffrement client à venir) |
+| Backups | vzdump + restic chiffré (AES-256) vers Hetzner Storage Box, restauration testée |
 | Supervision | Prometheus + Grafana + Alertmanager (Telegram) — Loki + Alloy (logs) |
 | Identités (IAM) | Authentik (OIDC/SAML/LDAP) — SSO Grafana, forward auth Caddy |
 | Automatisation | Ansible (CT de contrôle dédié) |

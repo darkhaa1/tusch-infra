@@ -135,11 +135,14 @@ Routes annoncées par le subnet router Tailscale : `10.10.0.0/24`,
 
 | | |
 |---|---|
-| Outil | `vzdump` (job planifié Proxmox) |
-| Fréquence | Tous les jours à 03:00, **tous** les CT et VM |
-| Mode | `snapshot`, compression `zstd` |
-| Cible | Hetzner Storage Box (CIFS) |
-| Rétention | 7 quotidiennes, 4 hebdomadaires, 3 mensuelles |
+| Outil | `vzdump` (brut) puis `restic` — script `backup-restic.sh`, timer systemd |
+| Fréquence | Tous les jours à 02:00, **tous** les CT et VM |
+| Mode | `snapshot` (à chaud) |
+| Chiffrement | restic, AES-256, mot de passe du dépôt hors du serveur |
+| Cible | Hetzner Storage Box (CIFS), dépôt `restic/` |
+| Rétention | 7 quotidiennes, 4 hebdomadaires, 3 mensuelles ; contrôle d'intégrité le dimanche |
+| Supervision | Alertes `BackupFailed`, `BackupTooOld`, `BackupMetricsMissing` |
+| Restauration | Testée (CT applicatif, données identiques, ~2 min) |
 
 Voir [`04-stockage.md`](04-stockage.md) § Sauvegardes.
 
@@ -152,7 +155,8 @@ Voir [`04-stockage.md`](04-stockage.md) § Sauvegardes.
 - **Logs** : Grafana Alloy sur le reverse proxy (logs d'accès Caddy) et sur le
   CT d'identité (logs des conteneurs Docker Authentik) pousse vers Loki
   (rétention 31 jours).
-- **Alertes** : `InstanceDown`, `DiskAlmostFull`, `HighMemory` → Telegram.
+- **Alertes** : `InstanceDown`, `DiskAlmostFull`, `HighMemory`, `BackupFailed`,
+  `BackupTooOld`, `BackupMetricsMissing` → Telegram.
 
 Détail dans [`07-supervision.md`](07-supervision.md).
 

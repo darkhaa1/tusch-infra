@@ -157,36 +157,108 @@ marge prévue pour les métadonnées), il faut donc surveiller le remplissage du
 Un volume thin peut afficher un taux d'occupation bien plus haut que le `df`
 vu de l'intérieur du conteneur : les blocs libérés par le système de fichiers
 ne sont rendus au pool qu'après un `fstrim`. Commande de rattrapage pour tous
-les CT : `pct fstrim <CTID>`.
+les CT : `pct fstrim <CTID>` — automatisé chaque dimanche par `pct-fstrim.timer`
+(premier passage : volume du CT supervision ramené de 95 % à 38 %).
 
 ---
 
 ## Sauvegardes
 
 Les snapshots protègent contre une erreur de manipulation, pas contre la perte
-de l'hôte. Les sauvegardes complètes partent donc **hors du serveur**.
+de l'hôte. Les sauvegardes complètes partent donc **hors du serveur**, et
+**chiffrées** : l'hébergeur de la Storage Box ne peut pas les lire.
+
+### Chaîne de sauvegarde
+
+```
+02:00  backup-restic.timer
+  │
+  ▼
+vzdump --all --mode snapshot --compress 0      tous les CT et VM, à chaud
+  │      → /var/lib/vz/restic-staging          (local, temporaire)
+  ▼
+restic backup                                  chiffrement AES-256 côté hôte
+  │      → Storage Box (CIFS) /restic          déduplication + compression
+  ▼
+restic forget --prune                          7 quotidiennes, 4 hebdo, 3 mensuelles
+  │
+  ├─ dimanche : restic check --read-data-subset=5%   (intégrité)
+  ▼
+métriques → node_exporter (textfile) → Prometheus → alerte Telegram
+```
 
 | | |
 |---|---|
-| Outil | `vzdump`, job planifié Proxmox (Datacenter → Backup) |
-| Périmètre | Tous les CT et toutes les VM (`all 1`) |
-| Horaire | Tous les jours à 03:00 |
+| Script | [`scripts/backup-restic.sh`](../../scripts/backup-restic.sh) (timer systemd 02:00) |
+| Périmètre | Tous les CT et toutes les VM |
 | Mode | `snapshot` — pas d'arrêt des invités |
-| Compression | `zstd` |
-| Cible | Hetzner Storage Box, montée en CIFS comme storage `storagebox-backup` |
-| Rétention | `keep-daily=7, keep-weekly=4, keep-monthly=3` |
+| Chiffrement | restic (AES-256-CTR + Poly1305), clé dérivée du mot de passe du dépôt |
+| Cible | Hetzner Storage Box, montée en CIFS (`storagebox-backup`) |
+| Rétention | 7 quotidiennes, 4 hebdomadaires, 3 mensuelles |
+| Alertes | `BackupFailed`, `BackupTooOld` (> 26 h), `BackupMetricsMissing` |
 
-La rétention est portée par le **job**, pas par le storage (qui reste en
-`keep-all`) : c'est le job qui fait le ménage après chaque passage.
+### Pourquoi vzdump **non compressé**
 
-> **Restauration** : une sauvegarde qui n'a jamais été restaurée n'est qu'une
-> hypothèse. Test de restauration recommandé : `pct restore <nouvel-ID>
-> <archive>` sur un ID libre, vérifier le démarrage, puis détruire le CT de
-> test.
+restic découpe les données en blocs et ne stocke qu'une fois les blocs
+identiques. Une archive `zstd` change entièrement dès qu'un octet change :
+rien ne se déduplique d'un jour à l'autre. Une archive brute, elle, se
+déduplique, et restic la compresse lui-même ensuite.
 
-**À venir** : chiffrement des sauvegardes côté client avant envoi (restic ou
-Proxmox Backup Server), pour que l'hébergeur de la Storage Box ne puisse pas
-lire les données.
+Première sauvegarde : **76 Go** d'archives brutes → **42 Go** stockés, en
+14 minutes. Les suivantes n'envoient que les blocs modifiés.
+
+### Le mot de passe du dépôt
+
+`/root/.restic-pass` (mode `600`). **Sans lui, les sauvegardes sont
+illisibles**, y compris pour l'administrateur. Une copie est conservée hors du
+serveur, dans un gestionnaire de mots de passe : si l'hôte est perdu, c'est la
+seule clé des sauvegardes.
+
+### Restauration — testée
+
+Une sauvegarde qui n'a jamais été restaurée n'est qu'une hypothèse. Test
+réalisé sur le CT applicatif (application + PostgreSQL) :
+
+```bash
+export RESTIC_REPOSITORY=/mnt/pve/storagebox-backup/restic
+export RESTIC_PASSWORD_FILE=/root/.restic-pass
+
+# 1. Extraire l'archive du CT depuis le dernier snapshot (39 s, 6,6 Go)
+restic restore latest --target /var/lib/vz/restore-test \
+    --include "/var/lib/vz/restic-staging/vzdump-lxc-200-*"
+
+# 2. Restaurer sous un ID libre, MAC régénérée (--unique) (34 s)
+pct restore 9200 /var/lib/vz/restore-test/.../vzdump-lxc-200-*.tar \
+    --storage local-lvm --unique 1
+
+# 3. Isoler AVANT de démarrer : autre IP, carte réseau coupée
+pct set 9200 -hostname restore-test-200 -onboot 0 \
+    -net0 name=eth0,bridge=vmbr1,ip=10.10.0.230/24,gw=10.10.0.1,firewall=1,link_down=1
+pct start 9200
+```
+
+> L'isolement réseau est indispensable : le CT restauré a la même IP que
+> l'original (conflit, piège #20) et le même client Tailscale (doublon de
+> nœud sur le tailnet).
+
+Vérifications, original contre restauré :
+
+| Contrôle | Original (CT 200) | Restauré (CT 9200) |
+|----------|-------------------|--------------------|
+| Services `postgresql`, `tusch-api`, `tusch-web` | actifs | actifs |
+| Base `tusch_prod` : tables / lignes (comptage exact) | 13 / 53 | 13 / 53 |
+| Empreinte des comptages par table | `039cb96a1a02` | `039cb96a1a02` |
+| Empreinte du binaire de l'API | `072fc1d2ba62…` | `072fc1d2ba62…` |
+| Front `:3000` / API `:3310` (localhost) | 200 / 302 | 200 / 302 |
+
+> Piège de vérification : sur la copie, `pg_stat_user_tables.n_live_tup`
+> affichait 0 ligne. Ce sont des **statistiques**, réinitialisées après la
+> reprise d'une sauvegarde à chaud — pas les données. Seul un `count(*)` réel
+> par table fait foi.
+
+**RTO mesuré** pour ce CT : environ **2 minutes** de la commande `restic
+restore` au CT démarré. Le CT de test a ensuite été détruit
+(`pct destroy 9200 --purge`).
 
 ---
 

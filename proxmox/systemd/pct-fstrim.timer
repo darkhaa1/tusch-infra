@@ -1,0 +1,9 @@
+[Unit]
+Description=fstrim hebdomadaire des CT
+
+[Timer]
+OnCalendar=Sun *-*-* 01:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,6 @@
+[Unit]
+Description=Rend au pool LVM-thin les blocs liberes dans les CT
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pct-fstrim-all.sh
