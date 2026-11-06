@@ -907,4 +907,58 @@ numéro de ligne lève le doute en deux secondes.
 
 ---
 
+## 26. Subnet router Tailscale : les CT ne répondent pas — double NAT dans les `fwbr`
+
+**Où** : hôte Proxmox, subnet router Tailscale + firewall PVE actif sur les CT.
+
+**Symptôme** : depuis un poste du tailnet, l'hôte répond (`10.10.0.1`,
+`10.20.0.254`) mais **aucun CT** : `curl http://10.10.0.40:3000` expire, même
+vers un port explicitement autorisé à la source admin `10.10.0.1`. Depuis
+l'hôte lui-même, le même port répond.
+
+**Diagnostic** : `tcpdump` montre le SYN (source déjà SNATée en `10.10.0.1`)
+sur `vmbr1`, `fwpr102p0`, `fwln102i0`, `fwbr102i0`… et **jamais** sur
+`veth102i0`. Aucun compteur de règle DROP PVE ne bouge. Le traçage noyau
+(`iptables -t raw -j TRACE`, iptables legacy → `dmesg`) donne la réponse :
+
+```
+filter:ts-forward:rule:2  IN=fwbr102i0 ... PHYSOUT=veth102i0 MARK=0x40000
+nat:ts-postrouting:rule:1 OUT=fwbr102i0 ...                  MARK=0x40000
+```
+
+**Cause** : `tailscaled` marque les paquets entrant par `tailscale0`
+(`0x40000`). Avec `bridge-nf-call-iptables=1`, le paquet repasse dans iptables
+quand il traverse le mini-bridge `fwbr` du CT — **avec sa marque** :
+
+1. `ts-forward` (placé avant `PVEFW-FORWARD`) voit la marque et **accepte
+   d'office** : le firewall du CT n'est jamais consulté ;
+2. la règle `fwbr+ → CT zone 1` (piège #3) fait du paquet une **nouvelle**
+   connexion dans la zone 1, donc la table `nat` est réévaluée ;
+3. `ts-postrouting` voit la marque et applique un second `MASQUERADE`, vers
+   `fwbr102i0`… qui n'a **pas d'adresse IP**. Le noyau jette le paquet.
+
+**Fix** : effacer la marque Tailscale à l'entrée des `fwbr`, persisté dans le
+bloc `vmbr1` de `/etc/network/interfaces` :
+
+```bash
+post-up   iptables -t mangle -A PREROUTING -i fwbr+ -j MARK --set-xmark 0x0/0xff0000
+post-down iptables -t mangle -D PREROUTING -i fwbr+ -j MARK --set-xmark 0x0/0xff0000
+```
+
+Le paquet n'est plus renatté (accès admin rétabli) **et** passe désormais par
+le firewall du CT : un port non autorisé à `10.10.0.1` reste fermé, y compris
+depuis le tailnet. Le retour n'est pas affecté : la réponse rejoint l'hôte par
+`vmbr1` (zone 0), où l'entrée SNAT d'origine la dé-NATe normalement.
+
+**Leçon** : deux outils qui posent chacun leurs règles netfilter (Tailscale,
+firewall PVE) peuvent interagir de façon invisible dans les chaînes de
+l'autre. Quand un paquet disparaît sans qu'aucun compteur DROP ne bouge,
+`TRACE` montre le chemin réel règle par règle. Corollaire sécurité : le
+firewall de l'hôte ne voit pas non plus le trafic Tailscale à destination de
+l'hôte (`ts-input` accepte `tailscale0` avant `PVEFW-INPUT`). Le contrôle
+d'accès du tailnet se fait donc dans les **ACL Tailscale**, pas dans
+`cluster.fw`.
+
+---
+
 *Document mis à jour au fil de la mise en place de l'infrastructure.*

@@ -197,6 +197,22 @@ Conséquence pratique : les règles firewall par-CT n'ont qu'**une** source admi
 segmentation par-CT simple à écrire (voir
 [`08-identites.md`](08-identites.md) § Segmentation firewall par conteneur).
 
+> **Attention — interaction avec le firewall PVE.** Tailscale marque les
+> paquets du tailnet, et cette marque les suit jusque dans les mini-bridges
+> `fwbr` des CT. Sans correction, les paquets y sont renattés une seconde
+> fois et jetés, et ils contournent le firewall du CT. Une règle `mangle`
+> efface la marque à l'entrée des `fwbr` (voir
+> [`../pieges-resolus.md`](../pieges-resolus.md) #26).
+
+### Contrôle d'accès du tailnet : les ACL Tailscale
+
+`tailscaled` insère sa chaîne `ts-input` **avant** celle du firewall Proxmox
+et y accepte tout ce qui arrive par `tailscale0`. Le firewall de l'hôte ne
+filtre donc pas le trafic du tailnet : le contrôle d'accès se fait dans les
+**ACL Tailscale** (console d'administration). Politique appliquée : refus par
+défaut, seul le poste d'admin atteint l'hôte et les sous-réseaux annoncés ;
+les autres nœuds du tailnet (dont le CT applicatif) n'atteignent rien.
+
 ### Filet de secours — alias SSH
 
 Si Tailscale est indisponible, le tunnel SSH reste le plan B. Un alias

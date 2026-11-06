@@ -60,6 +60,11 @@ iface vmbr1 inet static
     # Zone conntrack dédiée aux mini-bridges firewall PVE (sinon NAT cassé)
     post-up   iptables -t raw -I PREROUTING -i fwbr+ -j CT --zone 1
     post-down iptables -t raw -D PREROUTING -i fwbr+ -j CT --zone 1
+    # Efface la marque Tailscale (0x40000) à l'entrée des fwbr : sinon double NAT
+    # vers un fwbr sans IP (paquet jeté) et contournement du firewall des CT.
+    # Voir docs/pieges-resolus.md #26.
+    post-up   iptables -t mangle -A PREROUTING -i fwbr+ -j MARK --set-xmark 0x0/0xff0000
+    post-down iptables -t mangle -D PREROUTING -i fwbr+ -j MARK --set-xmark 0x0/0xff0000
 
 # --- Lab : LAN d'OPNsense, VLAN-aware (VLAN 10 SERVEURS, VLAN 20 CLIENTS) ---
 # Pas de NAT ici : c'est OPNsense qui route et filtre entre les VLANs.
